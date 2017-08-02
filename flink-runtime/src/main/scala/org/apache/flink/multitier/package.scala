@@ -21,9 +21,15 @@ package org.apache.flink
 import retier._
 import retier.transmission.{PullBasedTransmittable, RemoteRef, Serializable}
 
-import akka.actor.ActorRef
+import akka.actor.{ActorRef, ActorSystem}
+import akka.pattern.after
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream}
 import java.util.Base64
+import org.apache.flink.api.common.time.Time
+import org.apache.flink.runtime.concurrent.impl.FlinkFuture
+import scala.concurrent.duration._
+import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.{Future, TimeoutException}
 import scala.reflect.ClassTag
 import scala.util.Try
 
@@ -49,7 +55,22 @@ package object multitier {
     }
   }
 
-  def findRemote[T <: Peer](remotes: Traversable[Remote[T]], actorRef: ActorRef) =
+  implicit class FutureTimeoutOp[T](future: Future[T]) {
+    def timeout(duration: FiniteDuration)(implicit actorSystem: ActorSystem) = {
+      implicit val dispatcher = actorSystem.dispatcher
+      Future firstCompletedOf Seq(
+        future,
+        after(
+          duration, actorSystem.scheduler)(
+          Future.failed(new TimeoutException("Future timed out"))))
+    }
+  }
+
+  implicit class TimeAsDurationOp(time: Time) {
+    def asFiniteDuration = FiniteDuration(time.getSize, time.getUnit)
+  }
+
+  def findRemote[P <: Peer](remotes: Traversable[Remote[P]], actorRef: ActorRef) =
     remotes collectFirst {
       case remote
         if (remote.protocol match {
@@ -57,4 +78,34 @@ package object multitier {
           case _ => false
         }) => remote
     }
+
+  def flinkRemoteResult[P <: Peer, T](actorRef: ActorRef, remotes: => Traversable[Remote[P]])(
+      body: Remote[P] => Future[T])(implicit actorSystem: ActorSystem) = {
+    val promise = scala.concurrent.Promise[T]
+
+    def runWithRemote(): Unit =
+      findRemote(remotes, actorRef) match {
+        case Some(remote) =>
+          promise completeWith body(remote)
+        case None =>
+          actorSystem.scheduler.scheduleOnce(1.millisecond)(runWithRemote)(actorSystem.dispatcher)
+      }
+
+    runWithRemote()
+
+    new FlinkFuture(promise.future)
+  }
+
+  def flinkRemoteMessage[P <: Peer](actorRef: ActorRef, remotes: => Traversable[Remote[P]])(
+      body: Remote[P] => Unit)(implicit actorSystem: ActorSystem) = {
+    def runWithRemote(): Unit =
+      findRemote(remotes, actorRef) match {
+        case Some(remote) =>
+          body(remote)
+        case None =>
+          actorSystem.scheduler.scheduleOnce(1.millisecond)(runWithRemote)(actorSystem.dispatcher)
+      }
+
+    runWithRemote()
+  }
 }

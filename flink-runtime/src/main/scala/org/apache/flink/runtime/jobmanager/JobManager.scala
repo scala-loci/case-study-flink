@@ -19,6 +19,7 @@
 package org.apache.flink.runtime.jobmanager
 
 import retier.{Configuration => _, util => _, _}
+import retier.util.Notifier
 import org.apache.flink.multitier._
 import org.apache.flink.runtime.multitier.JobTask
 
@@ -55,11 +56,11 @@ import org.apache.flink.runtime.executiongraph.restart.RestartStrategyFactory
 import org.apache.flink.runtime.executiongraph._
 import org.apache.flink.runtime.highavailability.{HighAvailabilityServices, HighAvailabilityServicesUtils}
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils.AddressResolution
-import org.apache.flink.runtime.instance.{AkkaActorGateway, InstanceID, InstanceManager}
+import org.apache.flink.runtime.instance.{ActorGateway, AkkaActorGateway, InstanceID, InstanceManager}
 import org.apache.flink.runtime.jobgraph.{JobGraph, JobStatus}
 import org.apache.flink.runtime.jobmanager.SubmittedJobGraphStore.SubmittedJobGraphListener
 import org.apache.flink.runtime.jobmanager.scheduler.{Scheduler => FlinkScheduler}
-import org.apache.flink.runtime.jobmanager.slots.ActorTaskManagerGateway
+import org.apache.flink.runtime.jobmanager.slots.{ActorTaskManagerGateway, TaskManagerGateway}
 import org.apache.flink.runtime.jobmaster.JobMaster
 import org.apache.flink.runtime.leaderelection.{LeaderContender, LeaderElectionService}
 import org.apache.flink.runtime.jobmaster.JobMaster.{ARCHIVE_NAME, JOB_MANAGER_NAME}
@@ -151,9 +152,22 @@ class JobManager(
 
   val connectionListener = new AkkaConnectionListener
 
+  val createTaskManagerGateway = Notifier[ActorGateway]
+
+  var taskManagerGateway: TaskManagerGateway = _
+
   multitier setup new JobTask.JobManager {
     def connect = listen[JobTask.TaskManager] { connectionListener }
+
     override def context = contexts.Immediate.global
+
+    val actorSystem = JobManager.this.context.system
+
+    def taskManagerGatewayCreated(taskManagerGateway: TaskManagerGateway) =
+      JobManager.this.taskManagerGateway = taskManagerGateway
+
+    val createTaskManagerGateway =
+      JobManager.this.createTaskManagerGateway.notification
   }
 
   /** Either running or not yet archived jobs (session hasn't been ended). */
@@ -404,7 +418,7 @@ class JobManager(
         // TriggerRegistrationAtJobManager messages to the old ResourceManager
       }
 
-    case msg @ RegisterTaskManager(
+   case msg @ RegisterTaskManager(
           resourceId,
           connectionInfo,
           hardwareInformation,
@@ -446,7 +460,8 @@ class JobManager(
       } else {
         try {
           val actorGateway = new AkkaActorGateway(taskManager, leaderSessionID.orNull)
-          val taskManagerGateway = new ActorTaskManagerGateway(actorGateway)
+
+          createTaskManagerGateway(actorGateway)
 
           val instanceID = instanceManager.registerTaskManager(
             taskManagerGateway,

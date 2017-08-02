@@ -34,6 +34,7 @@ import _root_.akka.pattern.ask
 import _root_.akka.util.Timeout
 import grizzled.slf4j.Logger
 import org.apache.commons.lang3.exception.ExceptionUtils
+import org.apache.flink.api.common.JobID
 import org.apache.flink.api.common.time.Time
 import org.apache.flink.configuration._
 import org.apache.flink.core.fs.FileSystem
@@ -41,6 +42,8 @@ import org.apache.flink.runtime.accumulators.AccumulatorSnapshot
 import org.apache.flink.runtime.akka.{AkkaUtils, DefaultQuarantineHandler, QuarantineMonitor}
 import org.apache.flink.runtime.blob.{BlobCache, BlobClient, BlobService}
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager
+import org.apache.flink.runtime.checkpoint.CheckpointOptions
+import org.apache.flink.runtime.clusterframework.ApplicationStatus
 import org.apache.flink.runtime.clusterframework.messages.StopCluster
 import org.apache.flink.runtime.clusterframework.types.ResourceID
 import org.apache.flink.runtime.concurrent.Executors
@@ -79,6 +82,7 @@ import scala.collection.JavaConverters._
 import scala.concurrent._
 import scala.concurrent.duration._
 import scala.language.postfixOps
+import scala.util.Try
 
 /**
  * The TaskManager is responsible for executing the individual tasks of a Flink job. It is
@@ -138,11 +142,106 @@ class TaskManager(
 
   override val log = Logger(getClass)
 
-  val connectionRequestor = new AkkaConnectionRequestor
+  var connectionRequestor = new AkkaConnectionRequestor
 
-  multitier setup new JobTask.TaskManager {
-    def connect = request[JobTask.JobManager] { connectionRequestor }
-    override def context = contexts.Immediate.global
+  var multitierRuntime: Runtime = _
+
+  def terminateMultitier() =
+    if (multitierRuntime != null) {
+      multitierRuntime.terminate
+      multitierRuntime = null
+    }
+
+  def setupMultitier() = {
+    connectionRequestor = new AkkaConnectionRequestor
+
+    terminateMultitier()
+
+    multitierRuntime = multitier setup new JobTask.TaskManager {
+      def connect = request[JobTask.JobManager] { connectionRequestor }
+
+      override def context = contexts.Immediate.global
+
+      def submitTask(tdd: TaskDeploymentDescriptor) = TaskManager.this.submitTask(tdd)
+
+      def stopTask(executionAttemptID: ExecutionAttemptID) = {
+        val task = runningTasks.get(executionAttemptID)
+        if (task != null) {
+          try {
+            task.stopExecution()
+            decorateMessage(Acknowledge.get())
+          } catch {
+            case t: Throwable =>
+              decorateMessage(Status.Failure(t))
+          }
+        } else {
+          log.debug(s"Cannot find task to stop for execution ${executionAttemptID})")
+          decorateMessage(Acknowledge.get())
+        }
+      }
+
+      def cancelTask(executionAttemptID: ExecutionAttemptID) = {
+        val task = runningTasks.get(executionAttemptID)
+        if (task != null) {
+          task.cancelExecution()
+          decorateMessage(Acknowledge.get())
+        } else {
+          log.debug(s"Cannot find task to cancel for execution $executionAttemptID)")
+          decorateMessage(Acknowledge.get())
+        }
+      }
+
+      def updatePartitions(
+          executionAttemptID: ExecutionAttemptID,
+          partitionInfos: java.lang.Iterable[PartitionInfo]) =
+        updateTaskInputPartitions(executionAttemptID, partitionInfos)
+
+      def failPartition(executionAttemptID: ExecutionAttemptID) =
+        handleTaskMessage(FailIntermediateResultPartitions(executionAttemptID))
+
+      def notifyCheckpointComplete(
+          executionAttemptID: ExecutionAttemptID,
+          jobId: JobID,
+          checkpointId: Long,
+          timestamp: Long) =
+        handleCheckpointingMessage(new NotifyCheckpointComplete(
+          jobId, executionAttemptID, checkpointId, timestamp))
+
+      def triggerCheckpoint(
+          executionAttemptID: ExecutionAttemptID,
+          jobId: JobID,
+          checkpointId: Long,
+          timestamp: Long,
+          checkpointOptions: CheckpointOptions) =
+        handleCheckpointingMessage(new TriggerCheckpoint(
+          jobId, executionAttemptID, checkpointId, timestamp, checkpointOptions))
+
+      def requestTaskManagerLog(logTypeRequest: LogTypeRequest) =
+        blobService match {
+          case Some(_) =>
+            handleRequestTaskManagerLog(logTypeRequest, currentJobManager.get)
+          case None =>
+            akka.actor.Status.Failure(new IOException("BlobService not " +
+              "available. Cannot upload TaskManager logs."))
+        }
+
+      def disconnectFromJobManager(instanceId: InstanceID, cause: Exception) =
+        if (instanceId.equals(instanceID)) {
+          handleJobManagerDisconnect(s"JobManager requested disconnect: ${cause.getMessage()}")
+          triggerTaskManagerRegistration()
+        } else {
+          log.debug(s"Received disconnect message for wrong instance id ${instanceId}.")
+        }
+
+      def stopCluster(applicationStatus: ApplicationStatus, message: String) = {
+        log.info(s"Stopping TaskManager with final application status $applicationStatus " +
+          s"and diagnostics: $message")
+        shutdown()
+      }
+
+      def requestStackTrace() =
+        sendStackTrace()
+    }
   }
 
   /** The timeout for all actor ask futures */
@@ -309,7 +408,7 @@ class TaskManager(
     case SendHeartbeat => sendHeartbeatToJobManager()
 
     // sends the stack trace of this TaskManager to the sender
-    case SendStackTrace => sendStackTrace(sender())
+    case SendStackTrace => sender ! sendStackTrace()
 
     // registers the message sender to be notified once this TaskManager has completed
     // its registration at the JobManager
@@ -349,7 +448,7 @@ class TaskManager(
     case RequestTaskManagerLog(requestType : LogTypeRequest) =>
       blobService match {
         case Some(_) =>
-          handleRequestTaskManagerLog(sender(), requestType, currentJobManager.get)
+          sender() ! handleRequestTaskManagerLog(requestType, currentJobManager.get)
         case None =>
           sender() ! akka.actor.Status.Failure(new IOException("BlobService not " +
             "available. Cannot upload TaskManager logs."))
@@ -406,13 +505,13 @@ class TaskManager(
 
         // tell the task about the availability of a new input partition
         case UpdateTaskSinglePartitionInfo(executionID, resultID, partitionInfo) =>
-          updateTaskInputPartitions(
+          sender ! updateTaskInputPartitions(
             executionID,
             Collections.singletonList(new PartitionInfo(resultID, partitionInfo)))
 
         // tell the task about the availability of some new input partitions
         case UpdateTaskMultiplePartitionInfos(executionID, partitionInfos) =>
-          updateTaskInputPartitions(executionID, partitionInfos)
+          sender ! updateTaskInputPartitions(executionID, partitionInfos)
 
         // discards intermediate result partitions of a task execution on this TaskManager
         case FailIntermediateResultPartitions(executionID) =>
@@ -467,7 +566,7 @@ class TaskManager(
 
         // starts a new task on the TaskManager
         case SubmitTask(tdd) =>
-          submitTask(tdd)
+          sender ! submitTask(tdd)
 
         // marks a task as failed for an external reason
         // external reasons are reasons other than the task code itself throwing an exception
@@ -639,7 +738,6 @@ class TaskManager(
           // not yet connected, so let's associate with that JobManager
           try {
             associateWithJobManager(jobManager, id, blobPort)
-            connectionRequestor newConnection (jobManager, leaderSessionID.orNull)
           } catch {
             case t: Throwable =>
               killTaskManagerFatal(
@@ -835,14 +933,13 @@ class TaskManager(
   }
 
   private def handleRequestTaskManagerLog(
-      sender: ActorRef,
       requestType: LogTypeRequest,
       jobManager: ActorRef)
-    : Unit = {
+    : Any = {
     val logFilePathOption = Option(config.getConfiguration().getString(
       ConfigConstants.TASK_MANAGER_LOG_PATH_KEY, System.getProperty("log.file")))
     logFilePathOption match {
-      case None => sender ! akka.actor.Status.Failure(
+      case None => akka.actor.Status.Failure(
         new IOException("TaskManager log files are unavailable. " +
         "Log file location not found in environment variable log.file or configuration key "
         + ConfigConstants.TASK_MANAGER_LOG_PATH_KEY + "."))
@@ -854,20 +951,19 @@ class TaskManager(
         }
         if (file.exists()) {
           val fis = new FileInputStream(file);
-          Future {
+          Try {
             val client: BlobClient = blobService.get.createClient()
             client.put(fis);
-          }(context.dispatcher)
-            .onComplete {
-              case scala.util.Success(value) =>
-                sender ! value
-                fis.close()
-              case scala.util.Failure(e) =>
-                sender ! akka.actor.Status.Failure(e)
-                fis.close()
-            }(context.dispatcher)
+          } match {
+            case scala.util.Success(value) =>
+              fis.close()
+              value
+            case scala.util.Failure(e) =>
+              fis.close()
+              akka.actor.Status.Failure(e)
+          }
         } else {
-          sender ! akka.actor.Status.Failure(
+          akka.actor.Status.Failure(
             new IOException("TaskManager log files are unavailable. " +
             "Log file could not be found at " + file.getAbsolutePath + "."))
         }
@@ -936,6 +1032,9 @@ class TaskManager(
 
     currentJobManager = Some(jobManager)
     instanceID = id
+
+    setupMultitier()
+    connectionRequestor newConnection (jobManager, leaderSessionID.orNull)
 
     val jobManagerGateway = new AkkaActorGateway(jobManager, leaderSessionID.orNull)
     val taskManagerGateway = new AkkaActorGateway(self, leaderSessionID.orNull)
@@ -1060,6 +1159,8 @@ class TaskManager(
     currentJobManager = None
     instanceID = null
 
+    terminateMultitier()
+
     // shut down BLOB and library cache
     libraryCacheManager foreach {
       manager =>
@@ -1133,7 +1234,7 @@ class TaskManager(
    *
    * @param tdd TaskDeploymentDescriptor describing the task to be executed on this [[TaskManager]]
    */
-  private def submitTask(tdd: TaskDeploymentDescriptor): Unit = {
+  private def submitTask(tdd: TaskDeploymentDescriptor): Any = {
     try {
       // grab some handles and sanity check on the fly
       val jobManagerActor = currentJobManager match {
@@ -1237,12 +1338,12 @@ class TaskManager(
       // all good, we kick off the task, which performs its own initialization
       task.startTaskThread()
 
-      sender ! decorateMessage(Acknowledge.get())
+      decorateMessage(Acknowledge.get())
     }
     catch {
       case t: Throwable =>
         log.error("SubmitTask failed", t)
-        sender ! decorateMessage(Status.Failure(t))
+        decorateMessage(Status.Failure(t))
     }
   }
 
@@ -1255,7 +1356,7 @@ class TaskManager(
   private def updateTaskInputPartitions(
        executionId: ExecutionAttemptID,
        partitionInfos: java.lang.Iterable[PartitionInfo])
-    : Unit = {
+    : Any = {
 
     Option(runningTasks.get(executionId)) match {
       case Some(task) =>
@@ -1294,15 +1395,15 @@ class TaskManager(
         }
 
         if (errors.isEmpty) {
-          sender ! decorateMessage(Acknowledge.get())
+          decorateMessage(Acknowledge.get())
         } else {
-          sender ! decorateMessage(Status.Failure(new Exception(errors.mkString("\n"))))
+          decorateMessage(Status.Failure(new Exception(errors.mkString("\n"))))
         }
 
       case None =>
         log.debug(s"Discard update for input partitions of task $executionId : " +
           s"task is no longer running.")
-        sender ! decorateMessage(Acknowledge.get())
+        decorateMessage(Acknowledge.get())
     }
   }
 
@@ -1402,14 +1503,8 @@ class TaskManager(
 
   /**
    * Sends a message with the stack trace of all threads to the given recipient.
-   *
-   * @param recipient The target of the stack trace message
    */
-  private def sendStackTrace(recipient: ActorRef): Unit = {
-    if (recipient == null) {
-      return
-    }
-
+  private def sendStackTrace(): Any = {
     try {
       val traces = Thread.getAllStackTraces.asScala
       val stackTraceStr = traces.map {
@@ -1417,10 +1512,10 @@ class TaskManager(
           "Thread: " + thread.getName + '\n' + elements.mkString("\n")
         }.mkString("\n\n")
 
-      recipient ! decorateMessage(new StackTrace(instanceID, stackTraceStr))
+      decorateMessage(new StackTrace(instanceID, stackTraceStr))
     }
     catch {
-      case e: Exception => log.error("Failed to send stack trace to " + recipient.path, e)
+      case e: Exception => log.error("Failed to send stack trace", e)
     }
   }
 
