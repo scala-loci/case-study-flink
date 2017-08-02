@@ -18,6 +18,10 @@
 
 package org.apache.flink.runtime.taskmanager
 
+import retier.{Configuration => _, util => _, _}
+import org.apache.flink.multitier._
+import org.apache.flink.runtime.multitier.JobTask
+
 import java.io.{File, FileInputStream, IOException}
 import java.lang.management.ManagementFactory
 import java.net.{InetAddress, InetSocketAddress}
@@ -133,6 +137,13 @@ class TaskManager(
   with LeaderRetrievalListener {
 
   override val log = Logger(getClass)
+
+  val connectionRequestor = new AkkaConnectionRequestor
+
+  multitier setup new JobTask.TaskManager {
+    def connect = request[JobTask.JobManager] { connectionRequestor }
+    override def context = contexts.Immediate.global
+  }
 
   /** The timeout for all actor ask futures */
   protected val askTimeout = new Timeout(config.getTimeout().getSize, config.getTimeout().getUnit())
@@ -273,6 +284,10 @@ class TaskManager(
    * methods for handling certain classes of messages.
    */
   override def handleMessage: Receive = {
+
+    case message: AkkaMultitierMessage =>
+      connectionRequestor process message
+
     // task messages are most common and critical, we handle them first
     case message: TaskMessage => handleTaskMessage(message)
 
@@ -624,6 +639,7 @@ class TaskManager(
           // not yet connected, so let's associate with that JobManager
           try {
             associateWithJobManager(jobManager, id, blobPort)
+            connectionRequestor newConnection jobManager
           } catch {
             case t: Throwable =>
               killTaskManagerFatal(

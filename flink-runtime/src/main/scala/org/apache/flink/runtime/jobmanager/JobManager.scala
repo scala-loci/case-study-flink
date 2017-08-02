@@ -18,6 +18,10 @@
 
 package org.apache.flink.runtime.jobmanager
 
+import retier.{Configuration => _, util => _, _}
+import org.apache.flink.multitier._
+import org.apache.flink.runtime.multitier.JobTask
+
 import java.io.IOException
 import java.net._
 import java.util.UUID
@@ -144,6 +148,13 @@ class JobManager(
   with SubmittedJobGraphListener {
 
   override val log = Logger(getClass)
+
+  val connectionListener = new AkkaConnectionListener
+
+  multitier setup new JobTask.JobManager {
+    def connect = listen[JobTask.TaskManager] { connectionListener }
+    override def context = contexts.Immediate.global
+  }
 
   /** Either running or not yet archived jobs (session hasn't been ended). */
   protected val currentJobs = scala.collection.mutable.HashMap[JobID, (ExecutionGraph, JobInfo)]()
@@ -302,6 +313,9 @@ class JobManager(
    */
   override def handleMessage: Receive = {
 
+    case message: AkkaMultitierMessage =>
+      connectionListener process (sender, message)
+
     case GrantLeadership(newLeaderSessionID) =>
       log.info(s"JobManager $getAddress was granted leadership with leader session ID " +
         s"$newLeaderSessionID.")
@@ -441,6 +455,8 @@ class JobManager(
             numberOfSlots)
 
           taskManagerMap.put(taskManager, instanceID)
+
+          connectionListener newConnection taskManager
 
           taskManager ! decorateMessage(
             AcknowledgeRegistration(instanceID, libraryCacheManager.getBlobServerPort))
