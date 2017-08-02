@@ -314,7 +314,7 @@ class JobManager(
   override def handleMessage: Receive = {
 
     case message: AkkaMultitierMessage =>
-      connectionListener process (sender, message)
+      connectionListener process (sender, message, leaderSessionID)
 
     case GrantLeadership(newLeaderSessionID) =>
       log.info(s"JobManager $getAddress was granted leadership with leader session ID " +
@@ -456,7 +456,7 @@ class JobManager(
 
           taskManagerMap.put(taskManager, instanceID)
 
-          connectionListener newConnection taskManager
+          connectionListener newConnection (taskManager, leaderSessionID.orNull)
 
           taskManager ! decorateMessage(
             AcknowledgeRegistration(instanceID, libraryCacheManager.getBlobServerPort))

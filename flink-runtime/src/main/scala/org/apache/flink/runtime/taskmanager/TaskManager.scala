@@ -286,7 +286,7 @@ class TaskManager(
   override def handleMessage: Receive = {
 
     case message: AkkaMultitierMessage =>
-      connectionRequestor process message
+      connectionRequestor process (message, leaderSessionID)
 
     // task messages are most common and critical, we handle them first
     case message: TaskMessage => handleTaskMessage(message)
@@ -639,7 +639,7 @@ class TaskManager(
           // not yet connected, so let's associate with that JobManager
           try {
             associateWithJobManager(jobManager, id, blobPort)
-            connectionRequestor newConnection jobManager
+            connectionRequestor newConnection (jobManager, leaderSessionID.orNull)
           } catch {
             case t: Throwable =>
               killTaskManagerFatal(
