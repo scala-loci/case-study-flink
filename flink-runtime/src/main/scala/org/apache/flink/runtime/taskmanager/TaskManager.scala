@@ -19,8 +19,9 @@
 package org.apache.flink.runtime.taskmanager
 
 import retier.{Configuration => _, util => _, _}
+import retier.util.Notifier
 import org.apache.flink.multitier._
-import org.apache.flink.runtime.multitier.JobTask
+import org.apache.flink.runtime.multitier.Multitier
 
 import java.io.{File, FileInputStream, IOException}
 import java.lang.management.ManagementFactory
@@ -72,6 +73,7 @@ import org.apache.flink.runtime.metrics.groups.TaskManagerMetricGroup
 import org.apache.flink.runtime.metrics.util.MetricUtils
 import org.apache.flink.runtime.metrics.{MetricRegistry => FlinkMetricRegistry}
 import org.apache.flink.runtime.process.ProcessReaper
+import org.apache.flink.runtime.query.{KvStateRegistryListener, KvStateServerAddress}
 import org.apache.flink.runtime.security.SecurityUtils
 import org.apache.flink.runtime.security.SecurityUtils.SecurityConfiguration
 import org.apache.flink.runtime.taskexecutor.{TaskExecutor, TaskManagerConfiguration, TaskManagerServices, TaskManagerServicesConfiguration}
@@ -142,7 +144,21 @@ class TaskManager(
 
   override val log = Logger(getClass)
 
-  var connectionRequestor = new AkkaConnectionRequestor
+  var jobManagerConnectionRequestor = new AkkaConnectionRequestor
+
+  var taskManagerConnectionRequestor = new AkkaConnectionRequestor
+
+  val createKvStateRegistryListener = Notifier[KvStateServerAddress]
+
+  var taskManagerActions: TaskManagerActions = _
+
+  var checkpointResponder: CheckpointResponder = _
+
+  var resultPartitionConsumableNotifier: ResultPartitionConsumableNotifier = _
+
+  var partitionProducerStateChecker: PartitionProducerStateChecker = _
+
+  var kvStateRegistryListener: KvStateRegistryListener = _
 
   var multitierRuntime: Runtime = _
 
@@ -151,16 +167,50 @@ class TaskManager(
       multitierRuntime.terminate
       multitierRuntime = null
     }
-
+  
   def setupMultitier() = {
-    connectionRequestor = new AkkaConnectionRequestor
+    jobManagerConnectionRequestor = new AkkaConnectionRequestor
+
+    taskManagerConnectionRequestor = new AkkaConnectionRequestor
+
+    taskManagerActions = null
+
+    checkpointResponder = null
+
+    resultPartitionConsumableNotifier = null
+
+    partitionProducerStateChecker = null
+
+    kvStateRegistryListener = null
 
     terminateMultitier()
 
-    multitierRuntime = multitier setup new JobTask.TaskManager {
-      def connect = request[JobTask.JobManager] { connectionRequestor }
+    multitierRuntime = multitier setup new Multitier.TaskManager {
+      def connect =
+        request[Multitier.JobManager] { jobManagerConnectionRequestor } and
+        request[Multitier.TaskManager] { taskManagerConnectionRequestor }
 
       override def context = contexts.Immediate.global
+
+      def taskManagerActionsCreated(taskManagerActions: TaskManagerActions) =
+        TaskManager.this.taskManagerActions = taskManagerActions
+
+      def checkpointResponderCreated(checkpointResponder: CheckpointResponder) =
+        TaskManager.this.checkpointResponder = checkpointResponder
+
+      def resultPartitionConsumableNotifierCreated(
+          resultPartitionConsumableNotifier: ResultPartitionConsumableNotifier) =
+        TaskManager.this.resultPartitionConsumableNotifier = resultPartitionConsumableNotifier
+
+      def partitionProducerStateCheckerCreated(
+          partitionProducerStateChecker: PartitionProducerStateChecker) =
+        TaskManager.this.partitionProducerStateChecker = partitionProducerStateChecker
+
+      def kvStateRegistryListenerCreated(kvStateRegistryListener: KvStateRegistryListener) =
+        TaskManager.this.kvStateRegistryListener = kvStateRegistryListener
+
+      val createKvStateRegistryListener =
+        TaskManager.this.createKvStateRegistryListener.notification
 
       def submitTask(tdd: TaskDeploymentDescriptor) = TaskManager.this.submitTask(tdd)
 
@@ -241,6 +291,54 @@ class TaskManager(
 
       def requestStackTrace() =
         sendStackTrace()
+
+      def notifyFinalState(executionAttemptID: ExecutionAttemptID) =
+        unregisterTaskAndNotifyFinalState(executionAttemptID)
+
+      def notifyFatalError(message: String, cause: Throwable) =
+        killTaskManagerFatal(message, cause)
+
+      def failTask(executionAttemptID: ExecutionAttemptID, cause: Throwable) = {
+        val task = runningTasks.get(executionAttemptID)
+        if (task != null) {
+          task.failExternally(cause)
+        } else {
+          log.debug(s"Cannot find task to fail for execution $executionAttemptID)")
+        }
+      }
+
+      def updateTaskExecutionState(taskExecutionState: TaskExecutionState) = {
+        // we receive these from our tasks and forward them to the JobManager
+        currentJobManager foreach {
+          jobManager => {
+          val futureResponse =
+            (jobManager ? decorateMessage(UpdateTaskExecutionState(taskExecutionState)))(askTimeout)
+
+            val executionID = taskExecutionState.getID
+
+            futureResponse.mapTo[Boolean].onComplete {
+              // IMPORTANT: In the future callback, we cannot directly modify state
+              //            but only send messages to the TaskManager to do those changes
+              case scala.util.Success(result) =>
+                if (!result) {
+                self ! decorateMessage(
+                  FailTask(
+                    executionID,
+                    new Exception("Task has been cancelled on the JobManager."))
+                  )
+                }
+
+              case scala.util.Failure(t) =>
+              self ! decorateMessage(
+                FailTask(
+                  executionID,
+                  new Exception(
+                    "Failed to send ExecutionStateChange notification to JobManager", t))
+              )
+            }(TaskManager.this.context.dispatcher)
+          }
+        }
+      }
     }
   }
 
@@ -385,7 +483,15 @@ class TaskManager(
   override def handleMessage: Receive = {
 
     case message: AkkaMultitierMessage =>
-      connectionRequestor process (message, leaderSessionID)
+      if (sender == self) {
+        taskManagerConnectionRequestor process (message, leaderSessionID)
+      }
+      else {
+        jobManagerConnectionRequestor process (message, leaderSessionID)
+      }
+
+    case (jobManager: ActorRef, id: InstanceID, blobPort: Int) =>
+      associateWithJobManager(jobManager, id, blobPort, waitingForSetup = true)
 
     // task messages are most common and critical, we handle them first
     case message: TaskMessage => handleTaskMessage(message)
@@ -994,7 +1100,8 @@ class TaskManager(
   private def associateWithJobManager(
       jobManager: ActorRef,
       id: InstanceID,
-      blobPort: Int)
+      blobPort: Int,
+      waitingForSetup: Boolean = false)
     : Unit = {
 
     if (jobManager == null) {
@@ -1005,6 +1112,17 @@ class TaskManager(
     }
     if (blobPort <= 0 || blobPort > 65535) {
       throw new IllegalArgumentException("blob port is out of range: " + blobPort)
+    }
+
+    if (!waitingForSetup) {
+      setupMultitier()
+      jobManagerConnectionRequestor newConnection (jobManager, leaderSessionID.orNull)
+      taskManagerConnectionRequestor newConnection (self, leaderSessionID.orNull)
+    }
+
+    if (taskManagerActions == null) {
+      self ! ((jobManager, id, blobPort))
+      return
     }
 
     // sanity check that we are not currently registered with a different JobManager
@@ -1033,30 +1151,11 @@ class TaskManager(
     currentJobManager = Some(jobManager)
     instanceID = id
 
-    setupMultitier()
-    connectionRequestor newConnection (jobManager, leaderSessionID.orNull)
-
-    val jobManagerGateway = new AkkaActorGateway(jobManager, leaderSessionID.orNull)
-    val taskManagerGateway = new AkkaActorGateway(self, leaderSessionID.orNull)
-
-    val checkpointResponder = new ActorGatewayCheckpointResponder(jobManagerGateway)
-
-    val taskManagerConnection = new ActorGatewayTaskManagerActions(taskManagerGateway)
-
-    val partitionStateChecker = new ActorGatewayPartitionProducerStateChecker(
-      jobManagerGateway,
-      new FiniteDuration(config.getTimeout().toMilliseconds, TimeUnit.MILLISECONDS))
-
-    val resultPartitionConsumableNotifier = new ActorGatewayResultPartitionConsumableNotifier(
-      context.dispatcher,
-      jobManagerGateway,
-      new FiniteDuration(config.getTimeout().toMilliseconds, TimeUnit.MILLISECONDS))
-
     connectionUtils = Some(
       (checkpointResponder,
-        partitionStateChecker,
+        partitionProducerStateChecker,
         resultPartitionConsumableNotifier,
-        taskManagerConnection))
+        taskManagerActions))
 
 
     val kvStateServer = network.getKvStateServer()
@@ -1064,10 +1163,8 @@ class TaskManager(
     if (kvStateServer != null) {
       val kvStateRegistry = network.getKvStateRegistry()
 
-      kvStateRegistry.registerListener(
-        new ActorGatewayKvStateRegistryListener(
-          jobManagerGateway,
-          kvStateServer.getAddress))
+      createKvStateRegistryListener(kvStateServer.getAddress)
+      kvStateRegistry.registerListener(kvStateRegistryListener)
     }
 
     // start a blob service, if a blob server is specified

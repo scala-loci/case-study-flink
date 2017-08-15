@@ -21,7 +21,7 @@ package org.apache.flink.runtime.jobmanager
 import retier.{Configuration => _, util => _, _}
 import retier.util.Notifier
 import org.apache.flink.multitier._
-import org.apache.flink.runtime.multitier.JobTask
+import org.apache.flink.runtime.multitier.Multitier
 
 import java.io.IOException
 import java.net._
@@ -57,7 +57,8 @@ import org.apache.flink.runtime.executiongraph._
 import org.apache.flink.runtime.highavailability.{HighAvailabilityServices, HighAvailabilityServicesUtils}
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils.AddressResolution
 import org.apache.flink.runtime.instance.{ActorGateway, AkkaActorGateway, InstanceID, InstanceManager}
-import org.apache.flink.runtime.jobgraph.{JobGraph, JobStatus}
+import org.apache.flink.runtime.io.network.partition.ResultPartitionID
+import org.apache.flink.runtime.jobgraph.{IntermediateDataSetID, JobGraph, JobStatus, JobVertexID}
 import org.apache.flink.runtime.jobmanager.SubmittedJobGraphStore.SubmittedJobGraphListener
 import org.apache.flink.runtime.jobmanager.scheduler.{Scheduler => FlinkScheduler}
 import org.apache.flink.runtime.jobmanager.slots.{ActorTaskManagerGateway, TaskManagerGateway}
@@ -80,10 +81,11 @@ import org.apache.flink.runtime.metrics.{MetricRegistryConfiguration, MetricRegi
 import org.apache.flink.runtime.metrics.util.MetricUtils
 import org.apache.flink.runtime.process.ProcessReaper
 import org.apache.flink.runtime.query.KvStateMessage.{LookupKvStateLocation, NotifyKvStateRegistered, NotifyKvStateUnregistered}
-import org.apache.flink.runtime.query.{KvStateMessage, UnknownKvStateLocation}
+import org.apache.flink.runtime.query.{KvStateID, KvStateMessage, KvStateServerAddress, UnknownKvStateLocation}
 import org.apache.flink.runtime.rpc.akka.AkkaRpcServiceUtils
 import org.apache.flink.runtime.security.SecurityUtils
 import org.apache.flink.runtime.security.SecurityUtils.SecurityConfiguration
+import org.apache.flink.runtime.state.KeyGroupRange
 import org.apache.flink.runtime.taskexecutor.TaskExecutor
 import org.apache.flink.runtime.taskexecutor.TaskExecutor.TASK_MANAGER_NAME
 import org.apache.flink.runtime.taskmanager.TaskManager
@@ -156,8 +158,8 @@ class JobManager(
 
   var taskManagerGateway: TaskManagerGateway = _
 
-  multitier setup new JobTask.JobManager {
-    def connect = listen[JobTask.TaskManager] { connectionListener }
+  multitier setup new Multitier.JobManager {
+    def connect = listen[Multitier.TaskManager] { connectionListener }
 
     override def context = contexts.Immediate.global
 
@@ -168,6 +170,120 @@ class JobManager(
 
     val createTaskManagerGateway =
       JobManager.this.createTaskManagerGateway.notification
+
+    def acknowledgeCheckpoint(
+        jobID: JobID,
+        executionAttemptID: ExecutionAttemptID,
+        checkpointId: Long,
+        checkpointMetrics: CheckpointMetrics,
+        checkpointStateHandles: SubtaskState) =
+      handleCheckpointMessage(new AcknowledgeCheckpoint(
+        jobID, executionAttemptID, checkpointId, checkpointMetrics, checkpointStateHandles))
+
+    def declineCheckpoint(
+        jobID: JobID,
+        executionAttemptID: ExecutionAttemptID,
+        checkpointId: Long,
+        reason: Throwable) =
+      handleCheckpointMessage(new DeclineCheckpoint(
+        jobID, executionAttemptID, checkpointId, reason))
+
+    def notifyPartitionConsumable(
+        jobId: JobID,
+        partitionId: ResultPartitionID) =
+      currentJobs.get(jobId) match {
+        case Some((executionGraph, _)) =>
+          try {
+            executionGraph.scheduleOrUpdateConsumers(partitionId)
+            decorateMessage(Acknowledge.get())
+          } catch {
+            case e: Exception =>
+              decorateMessage(
+                Failure(new Exception("Could not schedule or update consumers.", e))
+              )
+          }
+        case None =>
+          log.error(s"Cannot find execution graph for job ID $jobId to schedule or update " +
+            s"consumers.")
+          decorateMessage(
+            Failure(
+              new IllegalStateException("Cannot find execution graph for job ID " +
+                s"$jobId to schedule or update consumers.")
+            )
+          )
+      }
+
+    def requestPartitionProducerState(
+        jobId: JobID,
+        intermediateDataSetId: IntermediateDataSetID,
+        resultPartitionId: ResultPartitionID) =
+      currentJobs.get(jobId) match {
+        case Some((executionGraph, _)) =>
+          try {
+            // Find the execution attempt producing the intermediate result partition.
+            val execution = executionGraph
+              .getRegisteredExecutions
+              .get(resultPartitionId.getProducerId)
+
+            if (execution != null) {
+              // Common case for pipelined exchanges => producing execution is
+              // still active.
+              decorateMessage(execution.getState)
+            } else {
+              // The producing execution might have terminated and been
+              // unregistered. We now look for the producing execution via the
+              // intermediate result itself.
+              val intermediateResult = executionGraph
+                .getAllIntermediateResults.get(intermediateDataSetId)
+
+              if (intermediateResult != null) {
+                // Try to find the producing execution
+                val producerExecution = intermediateResult
+                  .getPartitionById(resultPartitionId.getPartitionId)
+                  .getProducer
+                  .getCurrentExecutionAttempt
+
+                if (producerExecution.getAttemptId() == resultPartitionId.getProducerId()) {
+                  decorateMessage(producerExecution.getState)
+                } else {
+                  val cause = new PartitionProducerDisposedException(resultPartitionId)
+                  decorateMessage(Status.Failure(cause))
+                }
+              } else {
+                val cause = new IllegalArgumentException(
+                  s"Intermediate data set with ID $intermediateDataSetId not found.")
+                decorateMessage(Status.Failure(cause))
+              }
+            }
+          } catch {
+            case e: Exception =>
+              decorateMessage(
+                Status.Failure(new RuntimeException("Failed to look up execution state of " +
+                  s"producer with ID ${resultPartitionId.getProducerId}.", e)))
+          }
+
+        case None =>
+          decorateMessage(
+            Status.Failure(new IllegalArgumentException(s"Job with ID $jobId not found.")))
+      }
+
+    def notifyKvStateRegistered(
+        jobId: JobID,
+        jobVertexId: JobVertexID,
+        keyGroupRange: KeyGroupRange,
+        registrationName: String,
+        kvStateId: KvStateID,
+        kvStateServerAddress: KvStateServerAddress) =
+      handleKvStateMessage(new NotifyKvStateRegistered(
+        jobId, jobVertexId, keyGroupRange, registrationName, kvStateId, kvStateServerAddress))
+
+    def notifyKvStateUnregistered(
+        jobId: JobID,
+        jobVertexId: JobVertexID,
+        keyGroupRange: KeyGroupRange,
+        registrationName: String) =
+      handleKvStateMessage(new NotifyKvStateUnregistered(
+        jobId, jobVertexId, keyGroupRange, registrationName))
   }
 
   /** Either running or not yet archived jobs (session hasn't been ended). */
