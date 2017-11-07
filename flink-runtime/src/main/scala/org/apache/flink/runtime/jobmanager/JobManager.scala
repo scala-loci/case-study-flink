@@ -228,7 +228,7 @@ class JobManager(
             if (execution != null) {
               // Common case for pipelined exchanges => producing execution is
               // still active.
-              decorateMessage(execution.getState)
+              Left(execution.getState)
             } else {
               // The producing execution might have terminated and been
               // unregistered. We now look for the producing execution via the
@@ -244,26 +244,26 @@ class JobManager(
                   .getCurrentExecutionAttempt
 
                 if (producerExecution.getAttemptId() == resultPartitionId.getProducerId()) {
-                  decorateMessage(producerExecution.getState)
+                  Left(producerExecution.getState)
                 } else {
                   val cause = new PartitionProducerDisposedException(resultPartitionId)
-                  decorateMessage(Status.Failure(cause))
+                  Right(Status.Failure(cause))
                 }
               } else {
                 val cause = new IllegalArgumentException(
                   s"Intermediate data set with ID $intermediateDataSetId not found.")
-                decorateMessage(Status.Failure(cause))
+                Right(Status.Failure(cause))
               }
             }
           } catch {
             case e: Exception =>
-              decorateMessage(
+              Right(
                 Status.Failure(new RuntimeException("Failed to look up execution state of " +
                   s"producer with ID ${resultPartitionId.getProducerId}.", e)))
           }
 
         case None =>
-          decorateMessage(
+          Right(
             Status.Failure(new IllegalArgumentException(s"Job with ID $jobId not found.")))
       }
 

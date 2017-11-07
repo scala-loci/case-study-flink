@@ -19,9 +19,11 @@
 package org.apache.flink.runtime.multitier
 
 import retier._
+import retier.contexts.Immediate.Implicits.global
 import retier.basicTransmitter._
 import org.apache.flink.multitier._
 
+import akka.actor.Status
 import org.apache.flink.api.common.JobID
 import org.apache.flink.runtime.concurrent.impl.FlinkFuture
 import org.apache.flink.runtime.execution.ExecutionState
@@ -36,7 +38,7 @@ object PartitionProducerStateChecker {
     def requestPartitionProducerState(
       jobId: JobID,
       intermediateDataSetId: IntermediateDataSetID,
-      resultPartitionId: ResultPartitionID): Any
+      resultPartitionId: ResultPartitionID): Either[ExecutionState, Status.Failure]
   }
 
   trait PartitionProducerStateCheckerPeer extends Peer {
@@ -54,7 +56,7 @@ object PartitionProducerStateChecker {
         remote[PartitionProducerStateCheckedPeer].capture(
             jobId, intermediateDataSetId, resultPartitionId){ implicit! =>
           peer.requestPartitionProducerState(jobId, intermediateDataSetId, resultPartitionId)
-        }.asLocal.mapTo[ExecutionState])
+        }.asLocal.map(_.left.get))
     }
   }
 }

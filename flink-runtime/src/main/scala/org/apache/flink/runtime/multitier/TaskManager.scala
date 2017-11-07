@@ -20,10 +20,11 @@ package org.apache.flink.runtime.multitier
 
 import retier._
 import retier.util.Notification
+import retier.contexts.Immediate.Implicits.global
 import retier.basicTransmitter._
 import org.apache.flink.multitier._
 
-import akka.actor.{ActorRef, ActorSystem}
+import akka.actor.{ActorRef, ActorSystem, Status}
 import org.apache.flink.api.common.JobID
 import org.apache.flink.api.common.time.Time
 import org.apache.flink.runtime.blob.BlobKey
@@ -38,6 +39,7 @@ import org.apache.flink.runtime.messages.{Acknowledge, StackTrace, StackTraceSam
 import org.apache.flink.runtime.messages.TaskManagerMessages.{LogFileRequest, LogTypeRequest, StdOutFileRequest}
 import org.apache.flink.util.Preconditions
 import scala.concurrent.Future
+import scala.util.{Failure, Success}
 
 @multitier
 object TaskManager {
@@ -50,12 +52,12 @@ object TaskManager {
 
   trait TaskManagerPeer extends Peer {
     type Connection <: Single[JobManagerPeer]
-    def submitTask(tdd: TaskDeploymentDescriptor): Any
-    def stopTask(executionAttemptID: ExecutionAttemptID): Any
-    def cancelTask(executionAttemptID: ExecutionAttemptID): Any
+    def submitTask(tdd: TaskDeploymentDescriptor): Either[Acknowledge, Status.Failure]
+    def stopTask(executionAttemptID: ExecutionAttemptID): Either[Acknowledge, Status.Failure]
+    def cancelTask(executionAttemptID: ExecutionAttemptID): Acknowledge
     def updatePartitions(
       executionAttemptID: ExecutionAttemptID,
-      partitionInfos: java.lang.Iterable[PartitionInfo]): Any
+      partitionInfos: java.lang.Iterable[PartitionInfo]): Either[Acknowledge, Status.Failure]
     def failPartition(executionAttemptID: ExecutionAttemptID): Unit
     def notifyCheckpointComplete(
       executionAttemptID: ExecutionAttemptID,
@@ -68,10 +70,10 @@ object TaskManager {
       checkpointId: Long,
       timestamp: Long,
       checkpointOptions: CheckpointOptions): Unit
-    def requestTaskManagerLog(logTypeRequest: LogTypeRequest): Any
+    def requestTaskManagerLog(logTypeRequest: LogTypeRequest): Either[BlobKey, Status.Failure]
     def disconnectFromJobManager(instanceId: InstanceID, cause: Exception): Unit
     def stopCluster(applicationStatus: ApplicationStatus, message: String): Unit
-    def requestStackTrace(): Any
+    def requestStackTrace(): Option[StackTrace]
   }
 
   def remoteResult[T](actorRef: ActorRef)(body: Remote[TaskManagerPeer] => Future[T]) =
@@ -111,7 +113,7 @@ object TaskManager {
           remoteResult(actorGateway.actor) { taskManager =>
             remote.on(taskManager){ implicit! =>
               peer.requestStackTrace()
-            }.asLocal.timeout(timeout.asFiniteDuration).mapTo[StackTrace]
+            }.asLocal.timeout(timeout.asFiniteDuration).map(_.get)
           }
         }
 
@@ -139,7 +141,12 @@ object TaskManager {
               maxStackTraceDepth),
             timeout.asFiniteDuration)
             .timeout(timeout.asFiniteDuration)
-            .mapTo[StackTraceSampleResponse]
+            .flatMap { result =>
+              Future fromTry (result match {
+                case response: StackTraceSampleResponse => Success(response)
+                case Status.Failure(exception) => Failure(exception)
+              })
+            }
 
           new FlinkFuture(stackTraceSampleResponseFuture)
         }
@@ -151,7 +158,7 @@ object TaskManager {
           remoteResult(actorGateway.actor) { taskManager =>
             remote.on(taskManager).capture(tdd){ implicit! =>
               peer.submitTask(tdd)
-            }.asLocal.timeout(timeout.asFiniteDuration).mapTo[Acknowledge]
+            }.asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
           }
         }
 
@@ -162,7 +169,7 @@ object TaskManager {
           remoteResult(actorGateway.actor) { taskManager =>
             remote.on(taskManager).capture(executionAttemptID){ implicit! =>
               peer.stopTask(executionAttemptID)
-            }.asLocal.timeout(timeout.asFiniteDuration).mapTo[Acknowledge]
+            }.asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
           }
         }
 
@@ -173,7 +180,7 @@ object TaskManager {
           remoteResult(actorGateway.actor) { taskManager =>
             remote.on(taskManager).capture(executionAttemptID){ implicit! =>
               peer.cancelTask(executionAttemptID)
-            }.asLocal.timeout(timeout.asFiniteDuration).mapTo[Acknowledge]
+            }.asLocal.timeout(timeout.asFiniteDuration)
           }
         }
 
@@ -186,7 +193,7 @@ object TaskManager {
           remoteResult(actorGateway.actor) { taskManager =>
             remote.on(taskManager).capture(executionAttemptID, partitionInfos){ implicit! =>
               peer.updatePartitions(executionAttemptID, partitionInfos)
-            }.asLocal.mapTo[Acknowledge]
+            }.asLocal.map(_.left.get)
           }
         }
 
@@ -240,7 +247,7 @@ object TaskManager {
           remoteResult(actorGateway.actor) { taskManager =>
             remote.on(taskManager){ implicit! =>
               peer.requestTaskManagerLog(LogFileRequest)
-            }.asLocal.timeout(timeout.asFiniteDuration).mapTo[BlobKey]
+            }.asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
           }
         }
 
@@ -250,7 +257,7 @@ object TaskManager {
           remoteResult(actorGateway.actor) { taskManager =>
             remote.on(taskManager){ implicit! =>
               peer.requestTaskManagerLog(StdOutFileRequest)
-            }.asLocal.timeout(timeout.asFiniteDuration).mapTo[BlobKey]
+            }.asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
           }
         }
       }
