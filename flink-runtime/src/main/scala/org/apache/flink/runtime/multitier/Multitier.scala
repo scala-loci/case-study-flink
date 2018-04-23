@@ -18,7 +18,7 @@
 
 package org.apache.flink.runtime.multitier
 
-import retier._
+import loci._
 
 import org.apache.flink.runtime.multitier.CheckpointResponder.{CheckpointRequestorPeer, CheckpointResponderPeer}
 import org.apache.flink.runtime.multitier.KvStateRegistryListener.{KvStateRegistryListenerPeer, KvStateRegistryListeningPeer}
@@ -35,7 +35,7 @@ object Multitier {
       ResultPartitionConsumableNotifyeePeer with
       PartitionProducerStateCheckedPeer with
       KvStateRegistryListeningPeer {
-    type Connection <: Multiple[TaskManager] with
+    type Tie <: Multiple[TaskManager] with
       Multiple[TaskManagerPeer] with
       Multiple[CheckpointResponderPeer] with
       Multiple[ResultPartitionConsumableNotifierPeer] with
@@ -50,7 +50,7 @@ object Multitier {
       ResultPartitionConsumableNotifierPeer with
       PartitionProducerStateCheckerPeer with
       KvStateRegistryListenerPeer {
-    type Connection <: Single[JobManager] with
+    type Tie <: Single[JobManager] with
       Single[JobManagerPeer] with
       Single[TaskManagerActionsPeer] with
       Single[CheckpointRequestorPeer] with

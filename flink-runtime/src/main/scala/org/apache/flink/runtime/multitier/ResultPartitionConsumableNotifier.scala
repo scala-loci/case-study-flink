@@ -18,8 +18,8 @@
 
 package org.apache.flink.runtime.multitier
 
-import retier._
-import retier.basicTransmitter._
+import loci._
+import loci.basicTransmitter._
 import org.apache.flink.multitier._
 
 import org.apache.flink.api.common.JobID
@@ -32,14 +32,14 @@ import scala.concurrent.ExecutionContext.Implicits.global
 @multitier
 object ResultPartitionConsumableNotifier {
   trait ResultPartitionConsumableNotifyeePeer extends Peer {
-    type Connection <: Multiple[ResultPartitionConsumableNotifierPeer]
+    type Tie <: Multiple[ResultPartitionConsumableNotifierPeer]
     def notifyPartitionConsumable(
       jobId: JobID,
       partitionId: ResultPartitionID): Any
   }
 
   trait ResultPartitionConsumableNotifierPeer extends Peer {
-    type Connection <: Single[ResultPartitionConsumableNotifyeePeer]
+    type Tie <: Single[ResultPartitionConsumableNotifyeePeer]
     def resultPartitionConsumableNotifierCreated(
       resultPartitionConsumableNotifier: partition.ResultPartitionConsumableNotifier): Unit
   }

@@ -34,20 +34,29 @@ under the License.
 
 	<packaging>jar</packaging>
 
+	<repositories>
+		<repository>
+			<id>stg-tud-bintray</id>
+			<url>https://dl.bintray.com/stg-tud/maven</url>
+			<snapshots><enabled>false</enabled></snapshots>
+			<releases><enabled>true</enabled></releases>
+		</repository>
+	</repositories>
+
 	<dependencies>
 
 		<!-- multitier dependencies -->
 
 		<dependency>
 			<groupId>de.tuda.stg</groupId>
-			<artifactId>retier-core_2.11</artifactId>
-			<version>0.0.1-SNAPSHOT</version>
+			<artifactId>scala-loci-core_2.11</artifactId>
+			<version>0.1.0</version>
 		</dependency>
 
 		<dependency>
 			<groupId>de.tuda.stg</groupId>
-			<artifactId>retier-transmitter-basic_2.11</artifactId>
-			<version>0.0.1-SNAPSHOT</version>
+			<artifactId>scala-loci-transmitter-basic_2.11</artifactId>
+			<version>0.1.0</version>
 		</dependency>
 
 		<!-- core dependencies -->

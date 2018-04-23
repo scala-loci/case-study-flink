@@ -18,10 +18,10 @@
 
 package org.apache.flink.runtime.multitier
 
-import retier._
-import retier.util.Notification
-import retier.contexts.Immediate.Implicits.global
-import retier.basicTransmitter._
+import loci._
+import loci.util.Notification
+import loci.contexts.Immediate.Implicits.global
+import loci.basicTransmitter._
 import org.apache.flink.multitier._
 
 import akka.actor.{ActorRef, ActorSystem, Status}
@@ -44,14 +44,14 @@ import scala.util.{Failure, Success}
 @multitier
 object TaskManager {
   trait JobManagerPeer extends Peer {
-    type Connection <: Multiple[TaskManagerPeer]
+    type Tie <: Multiple[TaskManagerPeer]
     val actorSystem: ActorSystem
     def taskManagerGatewayCreated(taskManagerGateway: TaskManagerGateway): Unit
     val createTaskManagerGateway: Notification[ActorGateway]
   }
 
   trait TaskManagerPeer extends Peer {
-    type Connection <: Single[JobManagerPeer]
+    type Tie <: Single[JobManagerPeer]
     def submitTask(tdd: TaskDeploymentDescriptor): Either[Acknowledge, Status.Failure]
     def stopTask(executionAttemptID: ExecutionAttemptID): Either[Acknowledge, Status.Failure]
     def cancelTask(executionAttemptID: ExecutionAttemptID): Acknowledge

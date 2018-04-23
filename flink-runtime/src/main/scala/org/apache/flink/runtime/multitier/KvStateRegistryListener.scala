@@ -18,8 +18,8 @@
 
 package org.apache.flink.runtime.multitier
 
-import retier._
-import retier.util.Notification
+import loci._
+import loci.util.Notification
 import org.apache.flink.multitier._
 
 import org.apache.flink.api.common.JobID
@@ -31,7 +31,7 @@ import org.apache.flink.runtime.state.KeyGroupRange
 @multitier
 object KvStateRegistryListener {
   trait KvStateRegistryListeningPeer extends Peer {
-    type Connection <: Multiple[KvStateRegistryListenerPeer]
+    type Tie <: Multiple[KvStateRegistryListenerPeer]
     def notifyKvStateRegistered(
       jobId: JobID,
       jobVertexId: JobVertexID,
@@ -47,7 +47,7 @@ object KvStateRegistryListener {
   }
 
   trait KvStateRegistryListenerPeer extends Peer {
-    type Connection <: Single[KvStateRegistryListeningPeer]
+    type Tie <: Single[KvStateRegistryListeningPeer]
     def kvStateRegistryListenerCreated(kvStateRegistryListener: query.KvStateRegistryListener): Unit
     val createKvStateRegistryListener: Notification[KvStateServerAddress]
   }

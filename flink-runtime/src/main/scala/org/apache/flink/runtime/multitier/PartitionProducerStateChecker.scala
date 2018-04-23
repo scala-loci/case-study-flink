@@ -18,9 +18,9 @@
 
 package org.apache.flink.runtime.multitier
 
-import retier._
-import retier.contexts.Immediate.Implicits.global
-import retier.basicTransmitter._
+import loci._
+import loci.contexts.Immediate.Implicits.global
+import loci.basicTransmitter._
 import org.apache.flink.multitier._
 
 import akka.actor.Status
@@ -34,7 +34,7 @@ import org.apache.flink.runtime.jobgraph.IntermediateDataSetID
 @multitier
 object PartitionProducerStateChecker {
   trait PartitionProducerStateCheckedPeer extends Peer {
-    type Connection <: Multiple[PartitionProducerStateCheckerPeer]
+    type Tie <: Multiple[PartitionProducerStateCheckerPeer]
     def requestPartitionProducerState(
       jobId: JobID,
       intermediateDataSetId: IntermediateDataSetID,
@@ -42,7 +42,7 @@ object PartitionProducerStateChecker {
   }
 
   trait PartitionProducerStateCheckerPeer extends Peer {
-    type Connection <: Single[PartitionProducerStateCheckedPeer]
+    type Tie <: Single[PartitionProducerStateCheckedPeer]
     def partitionProducerStateCheckerCreated(
       partitionProducerStateChecker: netty.PartitionProducerStateChecker): Unit
   }

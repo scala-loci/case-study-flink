@@ -18,8 +18,8 @@
 
 package org.apache.flink
 
-import retier._
-import retier.transmission.{PullBasedTransmittable, RemoteRef, Serializable}
+import loci._
+import loci.transmission.{PullBasedTransmittable, RemoteRef, Serializable}
 
 import akka.actor.{ActorRef, ActorSystem}
 import akka.pattern.after

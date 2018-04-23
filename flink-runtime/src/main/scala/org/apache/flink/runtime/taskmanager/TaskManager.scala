@@ -18,8 +18,8 @@
 
 package org.apache.flink.runtime.taskmanager
 
-import retier.{Configuration => _, util => _, _}
-import retier.util.Notifier
+import loci.{Configuration => _, util => _, _}
+import loci.util.Notifier
 import org.apache.flink.multitier._
 import org.apache.flink.runtime.multitier.Multitier
 

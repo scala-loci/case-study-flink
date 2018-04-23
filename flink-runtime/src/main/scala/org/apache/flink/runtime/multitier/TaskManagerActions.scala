@@ -18,7 +18,7 @@
 
 package org.apache.flink.runtime.multitier
 
-import retier._
+import loci._
 import org.apache.flink.multitier._
 
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID
@@ -28,7 +28,7 @@ import org.apache.flink.runtime.taskmanager.TaskExecutionState
 @multitier
 object TaskManagerActions {
   trait TaskManagerActionsPeer extends Peer {
-    type Connection <: Single[TaskManagerActionsPeer]
+    type Tie <: Single[TaskManagerActionsPeer]
     def taskManagerActionsCreated(taskManagerActions: taskmanager.TaskManagerActions): Unit
 
     def notifyFinalState(executionAttemptID: ExecutionAttemptID): Unit

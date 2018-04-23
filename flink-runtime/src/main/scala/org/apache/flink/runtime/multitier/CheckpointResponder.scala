@@ -18,7 +18,7 @@
 
 package org.apache.flink.runtime.multitier
 
-import retier._
+import loci._
 import org.apache.flink.multitier._
 
 import org.apache.flink.api.common.JobID
@@ -29,7 +29,7 @@ import org.apache.flink.runtime.taskmanager
 @multitier
 object CheckpointResponder {
   trait CheckpointRequestorPeer extends Peer {
-    type Connection <: Multiple[CheckpointResponderPeer]
+    type Tie <: Multiple[CheckpointResponderPeer]
     def acknowledgeCheckpoint(
       jobID: JobID,
       executionAttemptID: ExecutionAttemptID,
@@ -44,7 +44,7 @@ object CheckpointResponder {
   }
 
   trait CheckpointResponderPeer extends Peer {
-    type Connection <: Single[CheckpointRequestorPeer]
+    type Tie <: Single[CheckpointRequestorPeer]
     def checkpointResponderCreated(checkpointResponder: taskmanager.CheckpointResponder): Unit
   }
 
