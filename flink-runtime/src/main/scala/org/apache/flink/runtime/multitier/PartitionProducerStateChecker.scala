@@ -20,7 +20,7 @@ package org.apache.flink.runtime.multitier
 
 import loci._
 import loci.contexts.Immediate.Implicits.global
-import loci.basicTransmitter._
+import loci.transmitter.basic._
 import org.apache.flink.multitier._
 
 import akka.actor.Status

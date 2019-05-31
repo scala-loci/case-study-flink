@@ -19,9 +19,8 @@
 package org.apache.flink.runtime.multitier
 
 import loci._
-import loci.util.Notification
 import loci.contexts.Immediate.Implicits.global
-import loci.basicTransmitter._
+import loci.transmitter.basic._
 import org.apache.flink.multitier._
 
 import akka.actor.{ActorRef, ActorSystem, Status}
@@ -89,7 +88,7 @@ object TaskManager {
   placed[JobManagerPeer] { implicit! =>
     implicit val actorSystem = peer.actorSystem
 
-    peer.createTaskManagerGateway += { actorGateway =>
+    peer.createTaskManagerGateway notify { actorGateway =>
       peer taskManagerGatewayCreated new ActorTaskManagerGateway(actorGateway) {
         override def disconnectFromJobManager(instanceId: InstanceID, cause: Exception) = {
           remoteMessage(actorGateway.actor) { taskManager =>

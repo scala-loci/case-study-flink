@@ -19,7 +19,7 @@
 package org.apache.flink.runtime.multitier
 
 import loci._
-import loci.basicTransmitter._
+import loci.transmitter.basic._
 import org.apache.flink.multitier._
 
 import org.apache.flink.api.common.JobID

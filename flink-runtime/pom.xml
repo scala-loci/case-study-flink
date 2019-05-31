@@ -49,14 +49,14 @@ under the License.
 
 		<dependency>
 			<groupId>de.tuda.stg</groupId>
-			<artifactId>scala-loci-core_2.11</artifactId>
-			<version>0.1.0</version>
+			<artifactId>scala-loci-lang_2.11</artifactId>
+			<version>0.2.0</version>
 		</dependency>
 
 		<dependency>
 			<groupId>de.tuda.stg</groupId>
-			<artifactId>scala-loci-transmitter-basic_2.11</artifactId>
-			<version>0.1.0</version>
+			<artifactId>scala-loci-lang-transmitter-basic_2.11</artifactId>
+			<version>0.2.0</version>
 		</dependency>
 
 		<!-- core dependencies -->

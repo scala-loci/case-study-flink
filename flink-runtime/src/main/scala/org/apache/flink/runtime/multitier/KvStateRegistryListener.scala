@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.multitier
 
 import loci._
-import loci.util.Notification
 import org.apache.flink.multitier._
 
 import org.apache.flink.api.common.JobID
@@ -53,7 +52,7 @@ object KvStateRegistryListener {
   }
 
   placed[KvStateRegistryListenerPeer] { implicit! =>
-    peer.createKvStateRegistryListener += { kvStateServerAddress =>
+    peer.createKvStateRegistryListener notify { kvStateServerAddress =>
       peer kvStateRegistryListenerCreated new query.KvStateRegistryListener {
         def notifyKvStateRegistered(
             jobId: JobID,

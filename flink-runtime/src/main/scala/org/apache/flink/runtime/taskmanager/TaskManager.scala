@@ -18,8 +18,7 @@
 
 package org.apache.flink.runtime.taskmanager
 
-import loci.{Configuration => _, util => _, _}
-import loci.util.Notifier
+import loci.{Configuration => _, _}
 import org.apache.flink.multitier._
 import org.apache.flink.runtime.multitier.Multitier
 
@@ -145,9 +144,9 @@ class TaskManager(
 
   override val log = Logger(getClass)
 
-  var jobManagerConnectionRequestor = new AkkaConnectionRequestor
+  var jobManagerConnector = new AkkaConnector
 
-  var taskManagerConnectionRequestor = new AkkaConnectionRequestor
+  var taskManagerConnector = new AkkaConnector
 
   val createKvStateRegistryListener = Notifier[KvStateServerAddress]
 
@@ -170,9 +169,9 @@ class TaskManager(
     }
   
   def setupMultitier() = {
-    jobManagerConnectionRequestor = new AkkaConnectionRequestor
+    jobManagerConnector = new AkkaConnector
 
-    taskManagerConnectionRequestor = new AkkaConnectionRequestor
+    taskManagerConnector = new AkkaConnector
 
     taskManagerActions = null
 
@@ -188,8 +187,8 @@ class TaskManager(
 
     multitierRuntime = multitier setup new Multitier.TaskManager {
       def connect =
-        request[Multitier.JobManager] { jobManagerConnectionRequestor } and
-        request[Multitier.TaskManager] { taskManagerConnectionRequestor }
+        connect[Multitier.JobManager] { jobManagerConnector } and
+        connect[Multitier.TaskManager] { taskManagerConnector }
 
       override def context = contexts.Immediate.global
 
@@ -490,10 +489,10 @@ class TaskManager(
 
     case message: AkkaMultitierMessage =>
       if (sender == self) {
-        taskManagerConnectionRequestor process (message, leaderSessionID)
+        taskManagerConnector process (message, leaderSessionID)
       }
       else {
-        jobManagerConnectionRequestor process (message, leaderSessionID)
+        jobManagerConnector process (message, leaderSessionID)
       }
 
     case (jobManager: ActorRef, id: InstanceID, blobPort: Int) =>
@@ -1127,8 +1126,8 @@ class TaskManager(
 
     if (!waitingForSetup) {
       setupMultitier()
-      jobManagerConnectionRequestor newConnection (jobManager, leaderSessionID.orNull)
-      taskManagerConnectionRequestor newConnection (self, leaderSessionID.orNull)
+      jobManagerConnector newConnection (jobManager, leaderSessionID.orNull)
+      taskManagerConnector newConnection (self, leaderSessionID.orNull)
     }
 
     if (taskManagerActions == null) {

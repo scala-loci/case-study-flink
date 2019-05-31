@@ -19,7 +19,7 @@
 package org.apache.flink
 
 import loci._
-import loci.transmission.{PullBasedTransmittable, RemoteRef, Serializable}
+import loci.transmitter.{PullBasedTransmittable, RemoteRef, Serializable}
 
 import akka.actor.{ActorRef, ActorSystem}
 import akka.pattern.after
@@ -44,14 +44,15 @@ package object multitier {
       val arrayStream = new ByteArrayOutputStream
       val objectStream = new ObjectOutputStream(arrayStream)
       objectStream writeObject value
-      Base64.getEncoder encodeToString arrayStream.toByteArray
+      MessageBuffer fromString (Base64.getEncoder encodeToString arrayStream.toByteArray)
     }
 
-    def deserialize(value: String) = Try {
+    def deserialize(value: MessageBuffer) = Try {
       (implicitly[ClassTag[T]].runtimeClass cast
         new ObjectInputStream(
           new ByteArrayInputStream(
-            Base64.getDecoder decode value.getBytes)).readObject).asInstanceOf[T]
+            Base64.getDecoder decode
+              (value.toString(0, value.length)).getBytes)).readObject).asInstanceOf[T]
     }
   }
 

@@ -18,8 +18,7 @@
 
 package org.apache.flink.runtime.jobmanager
 
-import loci.{Configuration => _, util => _, _}
-import loci.util.Notifier
+import loci.{Configuration => _, _}
 import org.apache.flink.multitier._
 import org.apache.flink.runtime.multitier.Multitier
 
@@ -152,14 +151,14 @@ class JobManager(
 
   override val log = Logger(getClass)
 
-  val connectionListener = new AkkaConnectionListener
+  val listener = new AkkaListener
 
   val createTaskManagerGateway = Notifier[ActorGateway]
 
   var taskManagerGateway: TaskManagerGateway = _
 
   multitier setup new Multitier.JobManager {
-    def connect = listen[Multitier.TaskManager] { connectionListener }
+    def connect = listen[Multitier.TaskManager] { listener }
 
     override def context = contexts.Immediate.global
 
@@ -444,7 +443,7 @@ class JobManager(
   override def handleMessage: Receive = {
 
     case message: AkkaMultitierMessage =>
-      connectionListener process (sender, message, leaderSessionID)
+      listener process (sender, message, leaderSessionID)
 
     case GrantLeadership(newLeaderSessionID) =>
       log.info(s"JobManager $getAddress was granted leadership with leader session ID " +
@@ -587,7 +586,7 @@ class JobManager(
 
           taskManagerMap.put(taskManager, instanceID)
 
-          connectionListener newConnection (taskManager, leaderSessionID.orNull)
+          listener newConnection (taskManager, leaderSessionID.orNull)
 
           taskManager ! decorateMessage(
             AcknowledgeRegistration(instanceID, libraryCacheManager.getBlobServerPort))
