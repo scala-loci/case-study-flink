@@ -18,7 +18,7 @@
 
 package org.apache.flink.runtime.jobmanager
 
-import loci.{Configuration => _, _}
+import loci._
 import org.apache.flink.multitier._
 import org.apache.flink.runtime.multitier.Multitier
 
@@ -153,22 +153,13 @@ class JobManager(
 
   val listener = new AkkaListener
 
-  val createTaskManagerGateway = Notifier[ActorGateway]
+  def multitierInstance = multitierRuntime.instance.value.get.get
 
-  var taskManagerGateway: TaskManagerGateway = _
+  val multitierRuntime = multitier start new Instance[Multitier.JobManager](
+      contexts.Immediate.global,
+      listen[Multitier.TaskManager] { listener }) {
 
-  multitier setup new Multitier.JobManager {
-    def connect = listen[Multitier.TaskManager] { listener }
-
-    override def context = contexts.Immediate.global
-
-    val actorSystem = JobManager.this.context.system
-
-    def taskManagerGatewayCreated(taskManagerGateway: TaskManagerGateway) =
-      JobManager.this.taskManagerGateway = taskManagerGateway
-
-    val createTaskManagerGateway =
-      JobManager.this.createTaskManagerGateway.notification
+    implicit val actorSystem = JobManager.this.context.system
 
     def acknowledgeCheckpoint(
         jobID: JobID,
@@ -576,10 +567,8 @@ class JobManager(
         try {
           val actorGateway = new AkkaActorGateway(taskManager, leaderSessionID.orNull)
 
-          createTaskManagerGateway(actorGateway)
-
           val instanceID = instanceManager.registerTaskManager(
-            taskManagerGateway,
+            multitierInstance retrieve Multitier.createTaskManagerGateway(actorGateway),
             connectionInfo,
             hardwareInformation,
             numberOfSlots)

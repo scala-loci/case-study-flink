@@ -27,56 +27,43 @@ import org.apache.flink.runtime.query
 import org.apache.flink.runtime.query.{KvStateID, KvStateServerAddress}
 import org.apache.flink.runtime.state.KeyGroupRange
 
-@multitier
-object KvStateRegistryListener {
-  trait KvStateRegistryListeningPeer extends Peer {
-    type Tie <: Multiple[KvStateRegistryListenerPeer]
-    def notifyKvStateRegistered(
-      jobId: JobID,
-      jobVertexId: JobVertexID,
-      keyGroupRange: KeyGroupRange,
-      registrationName: String,
-      kvStateId: KvStateID,
-      kvStateServerAddress: KvStateServerAddress): Unit
-    def notifyKvStateUnregistered(
-      jobId: JobID,
-      jobVertexId: JobVertexID,
-      keyGroupRange: KeyGroupRange,
-      registrationName: String): Unit
-  }
+@multitier trait KvStateRegistryListener {
+  @peer type JobManager <: { type Tie <: Multiple[TaskManager] }
+  @peer type TaskManager <: { type Tie <: Single[JobManager] }
 
-  trait KvStateRegistryListenerPeer extends Peer {
-    type Tie <: Single[KvStateRegistryListeningPeer]
-    def kvStateRegistryListenerCreated(kvStateRegistryListener: query.KvStateRegistryListener): Unit
-    val createKvStateRegistryListener: Notification[KvStateServerAddress]
-  }
+  def notifyKvStateRegistered(
+    jobId: JobID,
+    jobVertexId: JobVertexID,
+    keyGroupRange: KeyGroupRange,
+    registrationName: String,
+    kvStateId: KvStateID,
+    kvStateServerAddress: KvStateServerAddress): Unit on JobManager
 
-  placed[KvStateRegistryListenerPeer] { implicit! =>
-    peer.createKvStateRegistryListener notify { kvStateServerAddress =>
-      peer kvStateRegistryListenerCreated new query.KvStateRegistryListener {
+  def notifyKvStateUnregistered(
+    jobId: JobID,
+    jobVertexId: JobVertexID,
+    keyGroupRange: KeyGroupRange,
+    registrationName: String): Unit on JobManager
+
+  def createKvStateRegistryListener(kvStateServerAddress: KvStateServerAddress) =
+    on[TaskManager] local { implicit! =>
+      new query.KvStateRegistryListener {
         def notifyKvStateRegistered(
             jobId: JobID,
             jobVertexId: JobVertexID,
             keyGroupRange: KeyGroupRange,
             registrationName: String,
             kvStateId: KvStateID) =
-          remote[KvStateRegistryListeningPeer].capture(
-              jobId, jobVertexId, keyGroupRange, registrationName,
-              kvStateId, kvStateServerAddress){ implicit! =>
-            peer.notifyKvStateRegistered(
+          remote call KvStateRegistryListener.this.notifyKvStateRegistered(
               jobId, jobVertexId, keyGroupRange, registrationName, kvStateId, kvStateServerAddress)
-          }
 
         def notifyKvStateUnregistered(
             jobId: JobID,
             jobVertexId: JobVertexID,
             keyGroupRange: KeyGroupRange,
             registrationName: String) =
-          remote[KvStateRegistryListeningPeer].capture(
-              jobId, jobVertexId, keyGroupRange, registrationName){ implicit! =>
-            peer.notifyKvStateUnregistered(jobId, jobVertexId, keyGroupRange, registrationName)
-          }
+          remote call KvStateRegistryListener.this.notifyKvStateUnregistered(jobId, jobVertexId,
+            keyGroupRange, registrationName)
       }
     }
-  }
 }

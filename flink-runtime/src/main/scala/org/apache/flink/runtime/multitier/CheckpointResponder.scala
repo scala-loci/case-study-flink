@@ -26,52 +26,41 @@ import org.apache.flink.runtime.checkpoint.{CheckpointMetrics, SubtaskState}
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID
 import org.apache.flink.runtime.taskmanager
 
-@multitier
-object CheckpointResponder {
-  trait CheckpointRequestorPeer extends Peer {
-    type Tie <: Multiple[CheckpointResponderPeer]
-    def acknowledgeCheckpoint(
-      jobID: JobID,
-      executionAttemptID: ExecutionAttemptID,
-      checkpointId: Long,
-      checkpointMetrics: CheckpointMetrics,
-      checkpointStateHandles: SubtaskState): Unit
-    def declineCheckpoint(
-      jobID: JobID,
-      executionAttemptID: ExecutionAttemptID,
-      checkpointId: Long,
-      reason: Throwable): Unit
-  }
+@multitier trait CheckpointResponder {
+  @peer type JobManager <: { type Tie <: Multiple[TaskManager] }
+  @peer type TaskManager <: { type Tie <: Single[JobManager] }
 
-  trait CheckpointResponderPeer extends Peer {
-    type Tie <: Single[CheckpointRequestorPeer]
-    def checkpointResponderCreated(checkpointResponder: taskmanager.CheckpointResponder): Unit
-  }
+  def acknowledgeCheckpoint(
+    jobID: JobID,
+    executionAttemptID: ExecutionAttemptID,
+    checkpointId: Long,
+    checkpointMetrics: CheckpointMetrics,
+    checkpointStateHandles: SubtaskState): Unit on JobManager
 
-  placed[CheckpointResponderPeer] { implicit! =>
-    peer checkpointResponderCreated new taskmanager.CheckpointResponder {
+  def declineCheckpoint(
+    jobID: JobID,
+    executionAttemptID: ExecutionAttemptID,
+    checkpointId: Long,
+    reason: Throwable): Unit on JobManager
+
+  val checkpointResponder = on[TaskManager] local { implicit! =>
+    new taskmanager.CheckpointResponder {
       def acknowledgeCheckpoint(
           jobID: JobID,
           executionAttemptID: ExecutionAttemptID,
           checkpointId: Long,
           checkpointMetrics: CheckpointMetrics,
           checkpointStateHandles: SubtaskState) =
-        remote[CheckpointRequestorPeer].capture(
-            jobID, executionAttemptID, checkpointId,
-            checkpointMetrics, checkpointStateHandles){ implicit! =>
-          peer.acknowledgeCheckpoint(jobID, executionAttemptID, checkpointId, checkpointMetrics,
-            checkpointStateHandles)
-        }
+        remote call CheckpointResponder.this.acknowledgeCheckpoint(jobID, executionAttemptID,
+          checkpointId, checkpointMetrics, checkpointStateHandles)
 
       def declineCheckpoint(
           jobID: JobID,
           executionAttemptID: ExecutionAttemptID,
           checkpointId: Long,
           reason: Throwable) =
-        remote[CheckpointRequestorPeer].capture(
-            jobID, executionAttemptID, checkpointId, reason){ implicit! =>
-          peer.declineCheckpoint(jobID, executionAttemptID, checkpointId, reason)
-        }
+        remote call CheckpointResponder.this.declineCheckpoint(jobID, executionAttemptID,
+          checkpointId, reason)
     }
   }
 }

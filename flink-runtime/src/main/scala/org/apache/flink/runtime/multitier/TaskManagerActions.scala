@@ -25,39 +25,30 @@ import org.apache.flink.runtime.executiongraph.ExecutionAttemptID
 import org.apache.flink.runtime.taskmanager
 import org.apache.flink.runtime.taskmanager.TaskExecutionState
 
-@multitier
-object TaskManagerActions {
-  trait TaskManagerActionsPeer extends Peer {
-    type Tie <: Single[TaskManagerActionsPeer]
-    def taskManagerActionsCreated(taskManagerActions: taskmanager.TaskManagerActions): Unit
+@multitier trait TaskManagerActions {
+  @peer type TaskManager <: { type Tie <: Single[TaskManager] }
 
-    def notifyFinalState(executionAttemptID: ExecutionAttemptID): Unit
-    def notifyFatalError(message: String, cause: Throwable): Unit
-    def failTask(executionAttemptID: ExecutionAttemptID, cause: Throwable): Unit
-    def updateTaskExecutionState(taskExecutionState: TaskExecutionState): Unit
-  }
+  def notifyFinalState(executionAttemptID: ExecutionAttemptID): Unit on TaskManager
 
-  placed[TaskManagerActionsPeer] { implicit! =>
-    peer taskManagerActionsCreated new taskmanager.TaskManagerActions {
+  def notifyFatalError(message: String, cause: Throwable): Unit on TaskManager
+
+  def failTask(executionAttemptID: ExecutionAttemptID, cause: Throwable): Unit on TaskManager
+
+  def updateTaskExecutionState(taskExecutionState: TaskExecutionState): Unit on TaskManager
+
+  val taskManagerActions = on[TaskManager] local { implicit! =>
+    new taskmanager.TaskManagerActions {
       def notifyFinalState(executionAttemptID: ExecutionAttemptID) =
-        remote[TaskManagerActionsPeer].capture(executionAttemptID){ implicit! =>
-          peer.notifyFinalState(executionAttemptID)
-        }
+        remote call TaskManagerActions.this.notifyFinalState(executionAttemptID)
 
       def notifyFatalError(message: String, cause: Throwable) =
-        remote[TaskManagerActionsPeer].capture(message, cause){ implicit! =>
-          peer.notifyFatalError(message, cause)
-        }
+        remote call TaskManagerActions.this.notifyFatalError(message, cause)
 
       def failTask(executionAttemptID: ExecutionAttemptID, cause: Throwable) =
-        remote[TaskManagerActionsPeer].capture(executionAttemptID, cause){ implicit! =>
-          peer.failTask(executionAttemptID, cause)
-        }
+        remote call TaskManagerActions.this.failTask(executionAttemptID, cause)
 
       def updateTaskExecutionState(taskExecutionState: TaskExecutionState) =
-        remote[TaskManagerActionsPeer].capture(taskExecutionState){ implicit! =>
-          peer.updateTaskExecutionState(taskExecutionState)
-        }
+        remote call TaskManagerActions.this.updateTaskExecutionState(taskExecutionState)
     }
   }
 }

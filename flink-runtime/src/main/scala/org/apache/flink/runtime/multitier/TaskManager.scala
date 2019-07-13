@@ -20,7 +20,6 @@ package org.apache.flink.runtime.multitier
 
 import loci._
 import loci.contexts.Immediate.Implicits.global
-import loci.transmitter.basic._
 import org.apache.flink.multitier._
 
 import akka.actor.{ActorRef, ActorSystem, Status}
@@ -40,69 +39,74 @@ import org.apache.flink.util.Preconditions
 import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
-@multitier
-object TaskManager {
-  trait JobManagerPeer extends Peer {
-    type Tie <: Multiple[TaskManagerPeer]
-    val actorSystem: ActorSystem
-    def taskManagerGatewayCreated(taskManagerGateway: TaskManagerGateway): Unit
-    val createTaskManagerGateway: Notification[ActorGateway]
-  }
+@multitier trait TaskManager {
+  @peer type JobManager <: { type Tie <: Multiple[TaskManager] }
+  @peer type TaskManager <: { type Tie <: Single[JobManager] }
 
-  trait TaskManagerPeer extends Peer {
-    type Tie <: Single[JobManagerPeer]
-    def submitTask(tdd: TaskDeploymentDescriptor): Either[Acknowledge, Status.Failure]
-    def stopTask(executionAttemptID: ExecutionAttemptID): Either[Acknowledge, Status.Failure]
-    def cancelTask(executionAttemptID: ExecutionAttemptID): Acknowledge
-    def updatePartitions(
-      executionAttemptID: ExecutionAttemptID,
-      partitionInfos: java.lang.Iterable[PartitionInfo]): Either[Acknowledge, Status.Failure]
-    def failPartition(executionAttemptID: ExecutionAttemptID): Unit
-    def notifyCheckpointComplete(
-      executionAttemptID: ExecutionAttemptID,
-      jobId: JobID,
-      checkpointId: Long,
-      timestamp: Long): Unit
-    def triggerCheckpoint(
-      executionAttemptID: ExecutionAttemptID,
-      jobId: JobID,
-      checkpointId: Long,
-      timestamp: Long,
-      checkpointOptions: CheckpointOptions): Unit
-    def requestTaskManagerLog(logTypeRequest: LogTypeRequest): Either[BlobKey, Status.Failure]
-    def disconnectFromJobManager(instanceId: InstanceID, cause: Exception): Unit
-    def stopCluster(applicationStatus: ApplicationStatus, message: String): Unit
-    def requestStackTrace(): Option[StackTrace]
-  }
+  implicit val actorSystem: Local[ActorSystem] on JobManager
 
-  def remoteResult[T](actorRef: ActorRef)(body: Remote[TaskManagerPeer] => Future[T]) =
-    placed[JobManagerPeer].local { implicit! =>
-      flinkRemoteResult(actorRef, remote[TaskManagerPeer].connected)(body)(peer.actorSystem)
+  def submitTask(
+    tdd: TaskDeploymentDescriptor): Either[Acknowledge, Status.Failure] on TaskManager
+
+  def stopTask(
+    executionAttemptID: ExecutionAttemptID): Either[Acknowledge, Status.Failure] on TaskManager
+
+  def cancelTask(
+    executionAttemptID: ExecutionAttemptID): Acknowledge on TaskManager
+
+  def updatePartitions(
+    executionAttemptID: ExecutionAttemptID,
+    partitionInfos: java.lang.Iterable[PartitionInfo])
+  : Either[Acknowledge, Status.Failure] on TaskManager
+
+  def failPartition(executionAttemptID: ExecutionAttemptID): Unit on TaskManager
+
+  def notifyCheckpointComplete(
+    executionAttemptID: ExecutionAttemptID,
+    jobId: JobID,
+    checkpointId: Long,
+    timestamp: Long): Unit on TaskManager
+
+  def triggerCheckpoint(
+    executionAttemptID: ExecutionAttemptID,
+    jobId: JobID,
+    checkpointId: Long,
+    timestamp: Long,
+    checkpointOptions: CheckpointOptions): Unit on TaskManager
+
+  def requestTaskManagerLog(
+    logTypeRequest: LogTypeRequest)
+  : Either[BlobKey, Status.Failure] on TaskManager
+
+  def disconnectFromJobManager(instanceId: InstanceID, cause: Exception): Unit on TaskManager
+
+  def stopCluster(applicationStatus: ApplicationStatus, message: String): Unit on TaskManager
+
+  def requestStackTrace(): Option[StackTrace] on TaskManager
+
+  def remoteResult[T](actorRef: ActorRef)(body: Remote[TaskManager] => Future[T]) =
+    on[JobManager] local { implicit! =>
+      flinkRemoteResult(actorRef, remote[TaskManager].connected)(body)
     }
 
-  def remoteMessage(actorRef: ActorRef)(body: Remote[TaskManagerPeer] => Unit) =
-    placed[JobManagerPeer].local { implicit! =>
-      flinkRemoteMessage(actorRef, remote[TaskManagerPeer].connected)(body)(peer.actorSystem)
+  def remoteMessage(actorRef: ActorRef)(body: Remote[TaskManager] => Unit) =
+    on[JobManager] local { implicit! =>
+      flinkRemoteMessage(actorRef, remote[TaskManager].connected)(body)
     }
 
-  placed[JobManagerPeer] { implicit! =>
-    implicit val actorSystem = peer.actorSystem
-
-    peer.createTaskManagerGateway notify { actorGateway =>
-      peer taskManagerGatewayCreated new ActorTaskManagerGateway(actorGateway) {
+  def createTaskManagerGateway(actorGateway: ActorGateway)
+  : Local[ActorTaskManagerGateway] on JobManager =
+    on[JobManager] local { implicit! =>
+      new ActorTaskManagerGateway(actorGateway) {
         override def disconnectFromJobManager(instanceId: InstanceID, cause: Exception) = {
           remoteMessage(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(instanceId, cause){ implicit! =>
-              peer.disconnectFromJobManager(instanceId, cause)
-            }
+            remote(taskManager) call TaskManager.this.disconnectFromJobManager(instanceId, cause)
           }
         }
 
         override def stopCluster(applicationStatus: ApplicationStatus, message: String) = {
           remoteMessage(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(applicationStatus, message){ implicit! =>
-              peer.stopCluster(applicationStatus, message)
-            }
+            remote(taskManager) call TaskManager.this.stopCluster(applicationStatus, message)
           }
         }
 
@@ -110,9 +114,8 @@ object TaskManager {
           Preconditions.checkNotNull(timeout)
 
           remoteResult(actorGateway.actor) { taskManager =>
-            remote.on(taskManager){ implicit! =>
-              peer.requestStackTrace()
-            }.asLocal.timeout(timeout.asFiniteDuration).map(_.get)
+            (remote(taskManager) call TaskManager.this.requestStackTrace())
+              .asLocal.timeout(timeout.asFiniteDuration).map(_.get)
           }
         }
 
@@ -155,9 +158,8 @@ object TaskManager {
           Preconditions.checkNotNull(timeout)
 
           remoteResult(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(tdd){ implicit! =>
-              peer.submitTask(tdd)
-            }.asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
+            (remote(taskManager) call TaskManager.this.submitTask(tdd))
+              .asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
           }
         }
 
@@ -166,9 +168,8 @@ object TaskManager {
           Preconditions.checkNotNull(timeout)
 
           remoteResult(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(executionAttemptID){ implicit! =>
-              peer.stopTask(executionAttemptID)
-            }.asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
+            (remote(taskManager) call TaskManager.this.stopTask(executionAttemptID))
+              .asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
           }
         }
 
@@ -177,9 +178,8 @@ object TaskManager {
           Preconditions.checkNotNull(timeout)
 
           remoteResult(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(executionAttemptID){ implicit! =>
-              peer.cancelTask(executionAttemptID)
-            }.asLocal.timeout(timeout.asFiniteDuration)
+            (remote(taskManager) call TaskManager.this.cancelTask(executionAttemptID))
+              .asLocal.timeout(timeout.asFiniteDuration)
           }
         }
 
@@ -190,9 +190,9 @@ object TaskManager {
           Preconditions.checkNotNull(partitionInfos)
 
           remoteResult(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(executionAttemptID, partitionInfos){ implicit! =>
-              peer.updatePartitions(executionAttemptID, partitionInfos)
-            }.asLocal.map(_.left.get)
+            (remote(taskManager) call TaskManager.this.updatePartitions(
+                executionAttemptID, partitionInfos))
+              .asLocal.map(_.left.get)
           }
         }
 
@@ -200,9 +200,7 @@ object TaskManager {
           Preconditions.checkNotNull(executionAttemptID)
 
           remoteMessage(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(executionAttemptID){ implicit! =>
-              peer.failPartition(executionAttemptID)
-            }
+            remote(taskManager) call TaskManager.this.failPartition(executionAttemptID)
           }
         }
 
@@ -215,10 +213,8 @@ object TaskManager {
           Preconditions.checkNotNull(jobId)
 
           remoteMessage(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(
-                executionAttemptID, jobId, checkpointId, timestamp){ implicit! =>
-              peer.notifyCheckpointComplete(executionAttemptID, jobId, checkpointId, timestamp)
-            }
+            remote(taskManager) call TaskManager.this.notifyCheckpointComplete(
+              executionAttemptID, jobId, checkpointId, timestamp)
           }
         }
 
@@ -232,11 +228,8 @@ object TaskManager {
           Preconditions.checkNotNull(jobId)
 
           remoteMessage(actorGateway.actor) { taskManager =>
-            remote.on(taskManager).capture(
-                executionAttemptID, jobId, checkpointId, timestamp, checkpointOptions){ implicit! =>
-              peer.triggerCheckpoint(
-                executionAttemptID, jobId, checkpointId, timestamp, checkpointOptions)
-            }
+            remote(taskManager) call TaskManager.this.triggerCheckpoint(
+              executionAttemptID, jobId, checkpointId, timestamp, checkpointOptions)
           }
         }
 
@@ -244,9 +237,8 @@ object TaskManager {
           Preconditions.checkNotNull(timeout)
 
           remoteResult(actorGateway.actor) { taskManager =>
-            remote.on(taskManager){ implicit! =>
-              peer.requestTaskManagerLog(LogFileRequest)
-            }.asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
+            (remote(taskManager) call TaskManager.this.requestTaskManagerLog(LogFileRequest))
+              .asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
           }
         }
 
@@ -254,12 +246,10 @@ object TaskManager {
           Preconditions.checkNotNull(timeout)
 
           remoteResult(actorGateway.actor) { taskManager =>
-            remote.on(taskManager){ implicit! =>
-              peer.requestTaskManagerLog(StdOutFileRequest)
-            }.asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
+            (remote(taskManager) call TaskManager.this.requestTaskManagerLog(StdOutFileRequest))
+              .asLocal.timeout(timeout.asFiniteDuration).map(_.left.get)
           }
         }
       }
     }
-  }
 }

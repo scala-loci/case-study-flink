@@ -18,7 +18,7 @@
 
 package org.apache.flink.runtime.taskmanager
 
-import loci.{Configuration => _, _}
+import loci._
 import org.apache.flink.multitier._
 import org.apache.flink.runtime.multitier.Multitier
 
@@ -148,19 +148,9 @@ class TaskManager(
 
   var taskManagerConnector = new AkkaConnector
 
-  val createKvStateRegistryListener = Notifier[KvStateServerAddress]
+  def multitierInstance = multitierRuntime.instance.value.map { _.get } getOrElse null
 
-  var taskManagerActions: TaskManagerActions = _
-
-  var checkpointResponder: CheckpointResponder = _
-
-  var resultPartitionConsumableNotifier: ResultPartitionConsumableNotifier = _
-
-  var partitionProducerStateChecker: PartitionProducerStateChecker = _
-
-  var kvStateRegistryListener: KvStateRegistryListener = _
-
-  var multitierRuntime: Runtime = _
+  var multitierRuntime: Runtime[Multitier.TaskManager] = _
 
   def terminateMultitier() =
     if (multitierRuntime != null) {
@@ -173,44 +163,12 @@ class TaskManager(
 
     taskManagerConnector = new AkkaConnector
 
-    taskManagerActions = null
-
-    checkpointResponder = null
-
-    resultPartitionConsumableNotifier = null
-
-    partitionProducerStateChecker = null
-
-    kvStateRegistryListener = null
-
     terminateMultitier()
 
-    multitierRuntime = multitier setup new Multitier.TaskManager {
-      def connect =
+    multitierRuntime = multitier start new Instance[Multitier.TaskManager](
+        contexts.Immediate.global,
         connect[Multitier.JobManager] { jobManagerConnector } and
-        connect[Multitier.TaskManager] { taskManagerConnector }
-
-      override def context = contexts.Immediate.global
-
-      def taskManagerActionsCreated(taskManagerActions: TaskManagerActions) =
-        TaskManager.this.taskManagerActions = taskManagerActions
-
-      def checkpointResponderCreated(checkpointResponder: CheckpointResponder) =
-        TaskManager.this.checkpointResponder = checkpointResponder
-
-      def resultPartitionConsumableNotifierCreated(
-          resultPartitionConsumableNotifier: ResultPartitionConsumableNotifier) =
-        TaskManager.this.resultPartitionConsumableNotifier = resultPartitionConsumableNotifier
-
-      def partitionProducerStateCheckerCreated(
-          partitionProducerStateChecker: PartitionProducerStateChecker) =
-        TaskManager.this.partitionProducerStateChecker = partitionProducerStateChecker
-
-      def kvStateRegistryListenerCreated(kvStateRegistryListener: KvStateRegistryListener) =
-        TaskManager.this.kvStateRegistryListener = kvStateRegistryListener
-
-      val createKvStateRegistryListener =
-        TaskManager.this.createKvStateRegistryListener.notification
+        connect[Multitier.TaskManager] { taskManagerConnector }) {
 
       def submitTask(tdd: TaskDeploymentDescriptor) = TaskManager.this.submitTask(tdd)
 
@@ -1130,7 +1088,8 @@ class TaskManager(
       taskManagerConnector newConnection (self, leaderSessionID.orNull)
     }
 
-    if (taskManagerActions == null) {
+    if (multitierInstance == null ||
+        (multitierInstance retrieve Multitier.taskManagerActions) == null) {
       self ! ((jobManager, id, blobPort))
       return
     }
@@ -1162,10 +1121,10 @@ class TaskManager(
     instanceID = id
 
     connectionUtils = Some(
-      (checkpointResponder,
-        partitionProducerStateChecker,
-        resultPartitionConsumableNotifier,
-        taskManagerActions))
+      (multitierInstance retrieve Multitier.checkpointResponder,
+        multitierInstance retrieve Multitier.partitionProducerStateChecker,
+        multitierInstance retrieve Multitier.resultPartitionConsumableNotifier,
+        multitierInstance retrieve Multitier.taskManagerActions))
 
 
     val kvStateServer = network.getKvStateServer()
@@ -1173,8 +1132,9 @@ class TaskManager(
     if (kvStateServer != null) {
       val kvStateRegistry = network.getKvStateRegistry()
 
-      createKvStateRegistryListener(kvStateServer.getAddress)
-      kvStateRegistry.registerListener(kvStateRegistryListener)
+      kvStateRegistry.registerListener(
+        multitierInstance retrieve
+          Multitier.createKvStateRegistryListener(kvStateServer.getAddress))
     }
 
     // start a blob service, if a blob server is specified
@@ -1422,12 +1382,12 @@ class TaskManager(
         bcVarManager,
         taskManagerConnection,
         inputSplitProvider,
-        checkpointResponder,
+        multitierInstance retrieve Multitier.checkpointResponder,
         libCache,
         fileCache,
         config,
         taskMetricGroup,
-        resultPartitionConsumableNotifier,
+        multitierInstance retrieve Multitier.resultPartitionConsumableNotifier,
         partitionStateChecker,
         context.dispatcher)
 

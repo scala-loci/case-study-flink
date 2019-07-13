@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.multitier
 
 import loci._
-import loci.transmitter.basic._
 import org.apache.flink.multitier._
 
 import org.apache.flink.api.common.JobID
@@ -29,33 +28,26 @@ import org.apache.flink.runtime.taskmanager.TaskActions
 import org.slf4j.{Logger, LoggerFactory}
 import scala.concurrent.ExecutionContext.Implicits.global
 
-@multitier
-object ResultPartitionConsumableNotifier {
-  trait ResultPartitionConsumableNotifyeePeer extends Peer {
-    type Tie <: Multiple[ResultPartitionConsumableNotifierPeer]
-    def notifyPartitionConsumable(
-      jobId: JobID,
-      partitionId: ResultPartitionID): Any
-  }
+@multitier trait ResultPartitionConsumableNotifier {
+  @peer type JobManager <: { type Tie <: Multiple[TaskManager] }
+  @peer type TaskManager <: { type Tie <: Single[JobManager] }
 
-  trait ResultPartitionConsumableNotifierPeer extends Peer {
-    type Tie <: Single[ResultPartitionConsumableNotifyeePeer]
-    def resultPartitionConsumableNotifierCreated(
-      resultPartitionConsumableNotifier: partition.ResultPartitionConsumableNotifier): Unit
-  }
+  def notifyPartitionConsumable(
+    jobId: JobID,
+    partitionId: ResultPartitionID)
+  : Unit on JobManager
 
-  val LOG: Logger localOn ResultPartitionConsumableNotifierPeer =
-    LoggerFactory.getLogger(classOf[ResultPartitionConsumableNotifierPeer])
+  val LOG: Local[Logger] on TaskManager =
+    LoggerFactory.getLogger(getClass)
 
-  placed[ResultPartitionConsumableNotifierPeer] { implicit! =>
-    peer resultPartitionConsumableNotifierCreated new partition.ResultPartitionConsumableNotifier {
+  val resultPartitionConsumableNotifier = on[TaskManager] local { implicit! =>
+    new partition.ResultPartitionConsumableNotifier {
       def notifyPartitionConsumable(
           jobId: JobID,
           partitionId: ResultPartitionID,
           taskActions: TaskActions) =
-        remote[ResultPartitionConsumableNotifyeePeer].capture(jobId, partitionId){ implicit! =>
-          peer.notifyPartitionConsumable(jobId, partitionId)
-        }.asLocal.failed foreach { failure =>
+        (remote call ResultPartitionConsumableNotifier.this.notifyPartitionConsumable(
+            jobId, partitionId)).asLocal.failed foreach { failure =>
           LOG.error("Could not schedule or update consumers at the JobManager.", failure)
           taskActions.failExternally(new RuntimeException(
             "Could not notify JobManager to schedule or update consumers",

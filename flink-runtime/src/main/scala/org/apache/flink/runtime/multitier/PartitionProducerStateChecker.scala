@@ -20,43 +20,35 @@ package org.apache.flink.runtime.multitier
 
 import loci._
 import loci.contexts.Immediate.Implicits.global
-import loci.transmitter.basic._
 import org.apache.flink.multitier._
 
 import akka.actor.Status
 import org.apache.flink.api.common.JobID
+import org.apache.flink.runtime.concurrent.Future
 import org.apache.flink.runtime.concurrent.impl.FlinkFuture
 import org.apache.flink.runtime.execution.ExecutionState
 import org.apache.flink.runtime.io.network.netty
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID
 
-@multitier
-object PartitionProducerStateChecker {
-  trait PartitionProducerStateCheckedPeer extends Peer {
-    type Tie <: Multiple[PartitionProducerStateCheckerPeer]
-    def requestPartitionProducerState(
-      jobId: JobID,
-      intermediateDataSetId: IntermediateDataSetID,
-      resultPartitionId: ResultPartitionID): Either[ExecutionState, Status.Failure]
-  }
+@multitier trait PartitionProducerStateChecker {
+  @peer type JobManager <: { type Tie <: Multiple[TaskManager] }
+  @peer type TaskManager <: { type Tie <: Single[JobManager] }
 
-  trait PartitionProducerStateCheckerPeer extends Peer {
-    type Tie <: Single[PartitionProducerStateCheckedPeer]
-    def partitionProducerStateCheckerCreated(
-      partitionProducerStateChecker: netty.PartitionProducerStateChecker): Unit
-  }
+  def requestPartitionProducerState(
+    jobId: JobID,
+    intermediateDataSetId: IntermediateDataSetID,
+    resultPartitionId: ResultPartitionID)
+  : Either[ExecutionState, Status.Failure] on JobManager
 
-  placed[PartitionProducerStateCheckerPeer] { implicit! =>
-    peer partitionProducerStateCheckerCreated new netty.PartitionProducerStateChecker {
+  val partitionProducerStateChecker = on[TaskManager] local { implicit! =>
+    new netty.PartitionProducerStateChecker {
       def requestPartitionProducerState(
           jobId: JobID,
           intermediateDataSetId: IntermediateDataSetID,
-          resultPartitionId: ResultPartitionID) = new FlinkFuture(
-        remote[PartitionProducerStateCheckedPeer].capture(
-            jobId, intermediateDataSetId, resultPartitionId){ implicit! =>
-          peer.requestPartitionProducerState(jobId, intermediateDataSetId, resultPartitionId)
-        }.asLocal.map(_.left.get))
+          resultPartitionId: ResultPartitionID): Future[ExecutionState] = new FlinkFuture(
+        (remote call PartitionProducerStateChecker.this.requestPartitionProducerState(jobId,
+          intermediateDataSetId, resultPartitionId)).asLocal.map(_.left.get))
     }
   }
 }

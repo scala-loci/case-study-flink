@@ -20,42 +20,10 @@ package org.apache.flink.runtime.multitier
 
 import loci._
 
-import org.apache.flink.runtime.multitier.CheckpointResponder.{CheckpointRequestorPeer, CheckpointResponderPeer}
-import org.apache.flink.runtime.multitier.KvStateRegistryListener.{KvStateRegistryListenerPeer, KvStateRegistryListeningPeer}
-import org.apache.flink.runtime.multitier.PartitionProducerStateChecker.{PartitionProducerStateCheckedPeer, PartitionProducerStateCheckerPeer}
-import org.apache.flink.runtime.multitier.ResultPartitionConsumableNotifier.{ResultPartitionConsumableNotifierPeer, ResultPartitionConsumableNotifyeePeer}
-import org.apache.flink.runtime.multitier.TaskManager.{JobManagerPeer, TaskManagerPeer}
-import org.apache.flink.runtime.multitier.TaskManagerActions.TaskManagerActionsPeer
-
-@multitier
-object Multitier {
-  trait JobManager extends
-      JobManagerPeer with
-      CheckpointRequestorPeer with
-      ResultPartitionConsumableNotifyeePeer with
-      PartitionProducerStateCheckedPeer with
-      KvStateRegistryListeningPeer {
-    type Tie <: Multiple[TaskManager] with
-      Multiple[TaskManagerPeer] with
-      Multiple[CheckpointResponderPeer] with
-      Multiple[ResultPartitionConsumableNotifierPeer] with
-      Multiple[PartitionProducerStateCheckerPeer] with
-      Multiple[KvStateRegistryListenerPeer]
-  }
-
-  trait TaskManager extends
-      TaskManagerPeer with
-      TaskManagerActionsPeer with
-      CheckpointResponderPeer with
-      ResultPartitionConsumableNotifierPeer with
-      PartitionProducerStateCheckerPeer with
-      KvStateRegistryListenerPeer {
-    type Tie <: Single[JobManager] with
-      Single[JobManagerPeer] with
-      Single[TaskManagerActionsPeer] with
-      Single[CheckpointRequestorPeer] with
-      Single[ResultPartitionConsumableNotifyeePeer] with
-      Single[PartitionProducerStateCheckedPeer] with
-      Single[KvStateRegistryListeningPeer]
-  }
-}
+@multitier object Multitier extends
+  TaskManager with
+  TaskManagerActions with
+  CheckpointResponder with
+  ResultPartitionConsumableNotifier with
+  PartitionProducerStateChecker with
+  KvStateRegistryListener

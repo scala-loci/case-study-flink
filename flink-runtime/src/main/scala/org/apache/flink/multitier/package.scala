@@ -19,7 +19,7 @@
 package org.apache.flink
 
 import loci._
-import loci.transmitter.{PullBasedTransmittable, RemoteRef, Serializable}
+import loci.transmitter.{IdenticallyTransmittable, Serializable, Transmittable,Transmittables}
 
 import akka.actor.{ActorRef, ActorSystem}
 import akka.pattern.after
@@ -34,10 +34,10 @@ import scala.reflect.ClassTag
 import scala.util.Try
 
 package object multitier {
-  implicit def transmittableAny = new PullBasedTransmittable[Any, Any, Any] {
-    def send(value: Any, remote: RemoteRef) = value
-    def receive(value: Any, remote: RemoteRef) = value
-  }
+  implicit def transmittableAny[T]: Transmittable[T, T, T] {
+    type Proxy = Future[T]
+    type Transmittables = Transmittables.None
+  } = IdenticallyTransmittable()
 
   implicit def serializableAny[T: ClassTag] = new Serializable[T] {
     def serialize(value: T) = {
@@ -71,7 +71,7 @@ package object multitier {
     def asFiniteDuration = FiniteDuration(time.getSize, time.getUnit)
   }
 
-  def findRemote[P <: Peer](remotes: Traversable[Remote[P]], actorRef: ActorRef) =
+  def findRemote[P](remotes: Traversable[Remote[P]], actorRef: ActorRef) =
     remotes collectFirst {
       case remote
         if (remote.protocol match {
@@ -80,7 +80,7 @@ package object multitier {
         }) => remote
     }
 
-  def flinkRemoteResult[P <: Peer, T](actorRef: ActorRef, remotes: => Traversable[Remote[P]])(
+  def flinkRemoteResult[P, T](actorRef: ActorRef, remotes: => Traversable[Remote[P]])(
       body: Remote[P] => Future[T])(implicit actorSystem: ActorSystem) = {
     val promise = scala.concurrent.Promise[T]
 
@@ -97,7 +97,7 @@ package object multitier {
     new FlinkFuture(promise.future)
   }
 
-  def flinkRemoteMessage[P <: Peer](actorRef: ActorRef, remotes: => Traversable[Remote[P]])(
+  def flinkRemoteMessage[P](actorRef: ActorRef, remotes: => Traversable[Remote[P]])(
       body: Remote[P] => Unit)(implicit actorSystem: ActorSystem) = {
     def runWithRemote(): Unit =
       findRemote(remotes, actorRef) match {
