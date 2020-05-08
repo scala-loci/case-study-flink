@@ -26,7 +26,7 @@ import akka.actor.{Actor, ActorRef}
 import java.util.UUID
 import scala.collection.mutable
 import scala.concurrent.Promise
-import scala.util.Success
+import scala.util.{Success, Try}
 
 class AkkaEnpoint(val setup: ConnectionSetup[AkkaEnpoint], val actorRef: ActorRef)
     extends Protocol with SetupInfo with SecurityInfo with SymmetryInfo with Bidirectional {
@@ -41,66 +41,66 @@ class AkkaConnection(val protocol: AkkaEnpoint, leaderSessionID: UUID)(
   implicit val sender: ActorRef = Actor.noSender)
     extends Connection[AkkaEnpoint] {
   private var isOpen = true
-  private val doClosed = Notifier[Unit]
-  private val doReceive = Notifier[MessageBuffer]
+  private val doClosed = Notice.Steady[Unit]
+  private val doReceive = Notice.Stream[MessageBuffer]
 
-  val closed = doClosed.notification
-  val receive = doReceive.notification
+  val closed = doClosed.notice
+  val receive = doReceive.notice
 
   def open = isOpen
 
   def send(data: MessageBuffer) =
-    protocol.actorRef ! AkkaMultitierMessage(Some((data.toString(0, data.length), leaderSessionID)))
+    protocol.actorRef ! AkkaMultitierMessage(Some((data.decodeString, leaderSessionID)))
 
   def close() = {
     protocol.actorRef ! AkkaMultitierMessage(None)
     isOpen = false
-    doClosed()
+    doClosed.set()
   }
 
   def process(message: AkkaMultitierMessage, leaderSessionID: Option[UUID]) = message.data match {
     case Some((data, uuid)) =>
       leaderSessionID foreach { leaderSessionID =>
         if (leaderSessionID == uuid && open) {
-          doReceive(MessageBuffer fromString data)
+          doReceive fire (MessageBuffer encodeString data)
         }
       }
     case None =>
       isOpen = false
-      doClosed()
+      doClosed.set()
   }
 }
 
 class AkkaConnector extends Connector[AkkaEnpoint] {
-  private val promise = Promise[AkkaConnection]
+  private val connection = Notice.Steady[Try[AkkaConnection]]
 
-  def connect(handler: Handler[AkkaEnpoint]) =
-    promise.future onComplete { handler notify _ }
+  def connect(connectionEstablished: Connected[AkkaEnpoint]) =
+    connection.notice foreach connectionEstablished.set
 
   def newConnection(actorRef: ActorRef, leaderSessionID: UUID)(
       implicit sender: ActorRef = Actor.noSender) =
-    promise success new AkkaConnection(new AkkaEnpoint(this, actorRef), leaderSessionID)
+    connection.set(Success(new AkkaConnection(new AkkaEnpoint(this, actorRef), leaderSessionID)))
 
   def process(message: AkkaMultitierMessage, leaderSessionID: Option[UUID]) =
-    promise.future.value foreach { _ foreach { _ process (message, leaderSessionID) } }
+    connection.notice.current foreach { _ foreach { _ process (message, leaderSessionID) } }
 }
 
 class AkkaListener extends Listener[AkkaEnpoint] {
-  var connectionHandler = Option.empty[Handler[AkkaEnpoint]]
+  var connected = Option.empty[Connected[AkkaEnpoint]]
 
   val connections = mutable.Map.empty[ActorRef, AkkaConnection]
 
-  protected def startListening(handler: Handler[AkkaEnpoint]) = {
-    connectionHandler = Some(handler)
+  protected def startListening(connectionEstablished: Connected[AkkaEnpoint]) = {
+    connected = Some(connectionEstablished)
     Success(new Listening { def stopListening() = () })
   }
 
   def newConnection(actorRef: ActorRef, leaderSessionID: UUID)(
       implicit sender: ActorRef = Actor.noSender) = {
     val connection = new AkkaConnection(new AkkaEnpoint(this, actorRef), leaderSessionID)
-    connection.closed notify { _ => connections -= actorRef }
+    connection.closed foreach { _ => connections -= actorRef }
     connections += actorRef -> connection
-    connectionHandler foreach { _ notify Success(connection) }
+    connected foreach { _ fire Success(connection) }
   }
 
   def process(actorRef: ActorRef, message: AkkaMultitierMessage, leaderSessionID: Option[UUID]) =

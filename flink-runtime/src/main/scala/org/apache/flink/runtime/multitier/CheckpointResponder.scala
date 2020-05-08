@@ -43,7 +43,7 @@ import org.apache.flink.runtime.taskmanager
     checkpointId: Long,
     reason: Throwable): Unit on JobManager
 
-  val checkpointResponder = on[TaskManager] local { implicit! =>
+  val checkpointResponder = on[TaskManager] local {
     new taskmanager.CheckpointResponder {
       def acknowledgeCheckpoint(
           jobID: JobID,

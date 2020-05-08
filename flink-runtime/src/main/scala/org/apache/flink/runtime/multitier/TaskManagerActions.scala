@@ -36,7 +36,7 @@ import org.apache.flink.runtime.taskmanager.TaskExecutionState
 
   def updateTaskExecutionState(taskExecutionState: TaskExecutionState): Unit on TaskManager
 
-  val taskManagerActions = on[TaskManager] local { implicit! =>
+  val taskManagerActions = on[TaskManager] local {
     new taskmanager.TaskManagerActions {
       def notifyFinalState(executionAttemptID: ExecutionAttemptID) =
         remote call TaskManagerActions.this.notifyFinalState(executionAttemptID)

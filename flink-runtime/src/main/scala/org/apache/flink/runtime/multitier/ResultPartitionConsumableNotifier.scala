@@ -40,7 +40,7 @@ import scala.concurrent.ExecutionContext.Implicits.global
   val LOG: Local[Logger] on TaskManager =
     LoggerFactory.getLogger(getClass)
 
-  val resultPartitionConsumableNotifier = on[TaskManager] local { implicit! =>
+  val resultPartitionConsumableNotifier = on[TaskManager] local {
     new partition.ResultPartitionConsumableNotifier {
       def notifyPartitionConsumable(
           jobId: JobID,

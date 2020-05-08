@@ -153,7 +153,7 @@ class JobManager(
 
   val listener = new AkkaListener
 
-  def multitierInstance = multitierRuntime.instance.value.get.get
+  def multitierInstance = multitierRuntime.instance.current.get
 
   val multitierRuntime = multitier start new Instance[Multitier.JobManager](
       contexts.Immediate.global,

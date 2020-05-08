@@ -148,7 +148,7 @@ class TaskManager(
 
   var taskManagerConnector = new AkkaConnector
 
-  def multitierInstance = multitierRuntime.instance.value.map { _.get } getOrElse null
+  def multitierInstance = multitierRuntime.instance.current.orNull
 
   var multitierRuntime: Runtime[Multitier.TaskManager] = _
 

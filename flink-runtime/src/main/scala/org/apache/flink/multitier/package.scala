@@ -44,7 +44,7 @@ package object multitier {
       val arrayStream = new ByteArrayOutputStream
       val objectStream = new ObjectOutputStream(arrayStream)
       objectStream writeObject value
-      MessageBuffer fromString (Base64.getEncoder encodeToString arrayStream.toByteArray)
+      MessageBuffer encodeString (Base64.getEncoder encodeToString arrayStream.toByteArray)
     }
 
     def deserialize(value: MessageBuffer) = Try {
@@ -52,7 +52,7 @@ package object multitier {
         new ObjectInputStream(
           new ByteArrayInputStream(
             Base64.getDecoder decode
-              (value.toString(0, value.length)).getBytes)).readObject).asInstanceOf[T]
+              value.decodeString.getBytes)).readObject).asInstanceOf[T]
     }
   }
 

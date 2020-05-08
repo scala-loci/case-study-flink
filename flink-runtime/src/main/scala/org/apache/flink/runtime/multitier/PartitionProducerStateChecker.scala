@@ -41,7 +41,7 @@ import org.apache.flink.runtime.jobgraph.IntermediateDataSetID
     resultPartitionId: ResultPartitionID)
   : Either[ExecutionState, Status.Failure] on JobManager
 
-  val partitionProducerStateChecker = on[TaskManager] local { implicit! =>
+  val partitionProducerStateChecker = on[TaskManager] local {
     new netty.PartitionProducerStateChecker {
       def requestPartitionProducerState(
           jobId: JobID,

@@ -85,18 +85,18 @@ import scala.util.{Failure, Success}
   def requestStackTrace(): Option[StackTrace] on TaskManager
 
   def remoteResult[T](actorRef: ActorRef)(body: Remote[TaskManager] => Future[T]) =
-    on[JobManager] local { implicit! =>
+    on[JobManager] local {
       flinkRemoteResult(actorRef, remote[TaskManager].connected)(body)
     }
 
   def remoteMessage(actorRef: ActorRef)(body: Remote[TaskManager] => Unit) =
-    on[JobManager] local { implicit! =>
+    on[JobManager] local {
       flinkRemoteMessage(actorRef, remote[TaskManager].connected)(body)
     }
 
   def createTaskManagerGateway(actorGateway: ActorGateway)
   : Local[ActorTaskManagerGateway] on JobManager =
-    on[JobManager] local { implicit! =>
+    on[JobManager] local {
       new ActorTaskManagerGateway(actorGateway) {
         override def disconnectFromJobManager(instanceId: InstanceID, cause: Exception) = {
           remoteMessage(actorGateway.actor) { taskManager =>

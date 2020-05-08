@@ -46,7 +46,7 @@ import org.apache.flink.runtime.state.KeyGroupRange
     registrationName: String): Unit on JobManager
 
   def createKvStateRegistryListener(kvStateServerAddress: KvStateServerAddress) =
-    on[TaskManager] local { implicit! =>
+    on[TaskManager] local {
       new query.KvStateRegistryListener {
         def notifyKvStateRegistered(
             jobId: JobID,
